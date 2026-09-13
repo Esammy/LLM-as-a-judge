@@ -49,7 +49,7 @@ April, so calibration is a recurring job rather than a one-off.
 ```bash
 # no API key needed - the default provider is deterministic
 uv sync --extra dev
-uv run pytest          # 216 tests, offline, under two seconds
+uv run pytest          # 256 tests, offline, in about two seconds
 ```
 
 Judge a dataset from Python today:
@@ -75,12 +75,39 @@ old = asyncio.run(Runner(Judge(v1, StubProvider())).run(dataset))
 compare(old, result)   # IncomparableScoresError: rubric differs in version
 ```
 
-_Planned (CLI, phase 2):_
+Or from the command line:
 
 ```bash
-judgekit run datasets/example.jsonl --rubric rubrics/v2.yaml --out report.html
-judgekit calibrate --labels human-labels/seed.jsonl --min-kappa 0.6
-judgekit rubric diff v1 v2
+# Judge a dataset, write a standalone HTML report, save the run for later
+judgekit run datasets/example.jsonl -r rubrics/answer-quality.v2.yaml     --out report.html --save run.json
+
+# Fail CI if a published rubric was edited without a version bump
+judgekit rubric verify              # exit 1 on violation
+
+# See exactly why two rubrics are not comparable
+judgekit rubric diff rubrics/answer-quality.v1.yaml rubrics/answer-quality.v2.yaml
+
+# Diff two runs; refuses rather than printing a meaningless delta
+judgekit compare baseline.json candidate.json --max-drop 0.02
+```
+
+The guard, as it appears in a CI log:
+
+```
+$ judgekit rubric verify
+  [edited-without-bump] answer-quality@v2: content changed since it was locked
+  (714e2ddba037 -> 929e015dce9b). Bump the version rather than editing a
+  published rubric.
+x 1 rubric violation(s)
+$ echo $?
+1
+```
+
+_Planned (phase 3):_
+
+```bash
+judgekit calibrate --labels datasets/example.jsonl --min-kappa 0.6
+judgekit bias --dataset datasets/example.jsonl
 ```
 
 ## Design
@@ -116,7 +143,7 @@ worker pool scales horizontally.
 
 - [x] **Phase 0** - Foundations: packaging, ruff, mypy strict, pytest, CI
 - [x] **Phase 1** - Core library: models, rubrics, checks, judge, stub provider, runner
-- [ ] **Phase 2** - CLI and self-contained HTML report
+- [x] **Phase 2** - CLI and self-contained HTML report
 - [ ] **Phase 3** - Bias controls and human calibration
 - [ ] **Phase 4** - Gemini and Groq providers
 - [ ] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose

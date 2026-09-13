@@ -106,6 +106,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ARG", "S105", "S106", "PT011"]
+# The report embeds a CSS stylesheet. Wrapping declarations at 100 columns
+# makes it markedly harder to read than leaving related properties on one
+# line, and none of it is Python.
+"src/judgekit/core/report.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["judgekit"]

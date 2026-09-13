@@ -230,3 +230,75 @@ class TestHelp:
         result = runner.invoke(app, ["--help"])
         for command in ("run", "validate", "compare", "rubric"):
             assert command in result.stdout
+
+
+class TestCalibrate:
+    def test_reports_every_agreement_metric(self) -> None:
+        result = runner.invoke(app, ["calibrate", str(DATASET), "-r", str(V2)])
+
+        assert result.exit_code == 0
+        for metric in ("quadratic kappa", "cohen kappa", "krippendorff alpha", "spearman"):
+            assert metric in result.stdout
+
+    def test_shows_the_confusion_matrix(self) -> None:
+        result = runner.invoke(app, ["calibrate", str(DATASET), "-r", str(V2)])
+        assert "confusion matrix" in result.stdout
+        assert r"human\judge" in result.stdout
+
+    def test_min_kappa_gate_passes_a_good_judge(self) -> None:
+        result = runner.invoke(
+            app, ["calibrate", str(DATASET), "-r", str(V2), "--min-kappa", "0.5"]
+        )
+        assert result.exit_code == 0
+
+    def test_min_kappa_gate_fails_a_poor_judge(self) -> None:
+        result = runner.invoke(
+            app, ["calibrate", str(DATASET), "-r", str(V2), "--min-kappa", "0.99"]
+        )
+        assert result.exit_code == 1
+        assert "below the required" in result.output
+
+    def test_refuses_a_dataset_with_no_human_labels(self, tmp_path: Path) -> None:
+        """Without labels there is no judge to measure, only answers to grade."""
+        path = tmp_path / "unlabelled.jsonl"
+        path.write_text(json.dumps({"id": "a", "input": "q", "output": "o"}) + "\n", "utf-8")
+
+        result = runner.invoke(app, ["calibrate", str(path), "-r", str(V2)])
+
+        assert result.exit_code == 1
+        assert "no human labels" in result.output
+
+    def test_a_missing_dataset_exits_one(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["calibrate", str(tmp_path / "absent.jsonl"), "-r", str(V2)])
+        assert result.exit_code == 1
+
+
+class TestBias:
+    def test_reports_all_three_biases(self) -> None:
+        result = runner.invoke(app, ["bias", str(DATASET), "-r", str(V2)])
+
+        assert result.exit_code == 0
+        for kind in ("position", "verbosity", "self_preference"):
+            assert kind in result.stdout
+
+    def test_a_neutral_judge_raises_no_concerns(self) -> None:
+        result = runner.invoke(app, ["bias", str(DATASET), "-r", str(V2)])
+        assert result.exit_code == 0
+        assert "!" not in result.stdout.replace("judge!", "")
+
+    def test_fail_on_bias_exits_one_when_a_threshold_is_crossed(self) -> None:
+        """A threshold of zero makes any measurable bias a failure."""
+        result = runner.invoke(
+            app,
+            ["bias", str(DATASET), "-r", str(V2), "--threshold", "0.0", "--fail-on-bias"],
+        )
+        assert result.exit_code == 1
+        assert "exceed the 0.0 threshold" in result.output
+
+    def test_without_the_flag_bias_is_reported_but_not_fatal(self) -> None:
+        result = runner.invoke(app, ["bias", str(DATASET), "-r", str(V2), "--threshold", "0.0"])
+        assert result.exit_code == 0
+
+    def test_a_missing_dataset_exits_one(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["bias", str(tmp_path / "absent.jsonl"), "-r", str(V2)])
+        assert result.exit_code == 1

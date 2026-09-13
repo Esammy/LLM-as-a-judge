@@ -1,0 +1,27 @@
+# Normalise everything to LF in the repository. Without this, committing from
+# Windows stores CRLF, and a Makefile or shell script with CRLF fails on Linux
+# CI with errors that look nothing like the real cause.
+* text=auto eol=lf
+
+# These break outright if they ever gain CR characters.
+Makefile      text eol=lf
+*.sh          text eol=lf
+*.mk          text eol=lf
+Dockerfile    text eol=lf
+*.Dockerfile  text eol=lf
+
+# PowerShell is happiest with CRLF and is only ever run on Windows.
+*.ps1         text eol=crlf
+
+# Never touch these.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
+
+# Keep generated lockfiles out of diff noise in reviews.
+uv.lock       -diff linguist-generated=true

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The suite must never need a key or the network. If this ever has to change,
+  # something has leaked out of the stub provider.
+  JUDGEKIT_PROVIDER: stub
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: ruff check
+        run: uv run ruff check src tests
+
+      - name: ruff format
+        run: uv run ruff format --check src tests
+
+      - name: mypy (strict)
+        run: uv run mypy
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Run tests with coverage gate
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
+
+  offline:
+    name: Hermetic check (no network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      # The promise in the README is that the suite runs with no API key and no
+      # network. This job proves it rather than asserting it: DNS is pointed at
+      # a blackhole, so any real outbound call fails the build.
+      - name: Break DNS resolution
+        run: |
+          sudo cp /etc/resolv.conf /tmp/resolv.conf.bak
+          echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
+
+      - name: Run tests offline
+        run: uv run pytest -p no:cacheprovider
+
+      - name: Restore DNS
+        if: always()
+        run: sudo cp /tmp/resolv.conf.bak /etc/resolv.conf

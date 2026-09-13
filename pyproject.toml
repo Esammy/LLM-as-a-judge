@@ -1,0 +1,156 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "judgekit"
+version = "0.1.0"
+description = "Most eval tools measure your model. This one measures your judge."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Samuel David Egwu", email = "egwusamuel2015@gmail.com" }]
+keywords = [
+    "llm",
+    "llm-as-a-judge",
+    "evaluation",
+    "evals",
+    "calibration",
+    "bias",
+    "rubric",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.9",
+    "typer>=0.15",
+    "rich>=13.9",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "numpy>=2.1",
+]
+
+[project.optional-dependencies]
+providers = [
+    "google-genai>=1.0",
+    "groq>=0.13",
+]
+service = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "arq>=0.26",
+    "prometheus-client>=0.21",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "types-PyYAML>=6.0",
+    "pre-commit>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Esammy/llm-as-a-judge"
+Repository = "https://github.com/Esammy/llm-as-a-judge"
+Issues = "https://github.com/Esammy/llm-as-a-judge/issues"
+
+[project.scripts]
+judgekit = "judgekit.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/judgekit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "A",        # builtins shadowing
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "PTH",      # use pathlib
+    "RUF",      # ruff-specific
+    "ANN",      # annotations
+    "S",        # bandit security
+    "PT",       # pytest style
+    "RET",      # return
+    "ARG",      # unused arguments
+    "TID",      # tidy imports
+]
+ignore = [
+    "ANN401",   # allow typing.Any where genuinely needed
+    "S101",     # assert is fine in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG", "S105", "S106", "PT011"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["judgekit"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+warn_no_return = true
+disallow_any_generics = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["groq.*", "google.genai.*", "arq.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "live: requires a real provider API key; skipped by default",
+]
+
+[tool.coverage.run]
+source = ["src/judgekit"]
+branch = true
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]

@@ -49,7 +49,7 @@ April, so calibration is a recurring job rather than a one-off.
 ```bash
 # no API key needed - the default provider is deterministic
 uv sync --extra dev
-uv run pytest          # 256 tests, offline, in about two seconds
+uv run pytest          # 315 tests, offline, in about three seconds
 ```
 
 Judge a dataset from Python today:
@@ -103,12 +103,83 @@ $ echo $?
 1
 ```
 
-_Planned (phase 3):_
+### Measuring the judge
+
+This is the part nothing else ships. Give it cases carrying `human_label` and
+it tells you whether your judge can be trusted at all:
 
 ```bash
-judgekit calibrate --labels datasets/example.jsonl --min-kappa 0.6
-judgekit bias --dataset datasets/example.jsonl
+$ judgekit calibrate datasets/example.jsonl -r rubrics/answer-quality.v2.yaml
+
+metric              value  reading
+quadratic kappa     0.702  substantial
+cohen kappa         0.360  exact matches only; harsh on ordinal scales
+krippendorff alpha  0.759  interval reliability
+spearman            0.927  does it rank cases the way humans do?
+mean abs error       0.70  scale points
+systematic offset   +0.06  positive means generous
+exact agreement       50%
+within one point      62%
+
+confusion matrix (rows: human, columns: judge)
+human\judge     1     2     3     4     5
+          1     0     1     1     0     0
+          3     0     0     2     0     0
+          4     0     0     1     1     0
+          5     0     0     0     1     1
 ```
+
+Two things in that table are worth dwelling on.
+
+**Quadratic kappa says 0.702; plain Cohen's kappa says 0.360.** Same judge, same
+data. Plain kappa only asks whether the two raters matched exactly, so it
+punishes a 4-where-a-human-said-5 exactly as hard as a 1-where-a-human-said-5.
+On an ordinal quality scale that is the wrong model, and it makes usable judges
+look broken. Quadratic weighting is the headline for that reason.
+
+**Spearman is 0.927 but exact agreement is only 50%.** The judge ranks cases
+almost exactly as the humans do while frequently landing on a different number.
+That is a threshold problem, not a rubric problem, and the two have different
+fixes - which is why both are reported.
+
+Add `--min-kappa 0.6` to make it a CI gate.
+
+### Measuring bias
+
+Every detector returns a **magnitude in a stated unit**, not a verdict. A
+mitigation you cannot measure is one you cannot justify keeping or dropping.
+
+```bash
+$ judgekit bias datasets/example.jsonl -r rubrics/answer-quality.v2.yaml
+
+ok position +0.000 scale points (n=8)
+    the same answer scored +0.00 points differently between slots;
+    0 of 8 cases moved at all
+ok verbosity -0.038 correlation (n=8)
+    length correlates -0.04 with judge-minus-human residual
+ok self_preference +0.000 scale points (n=0)
+    needs cases from the judge's own family (stub) and from others, tagged in
+    metadata['generator_family']; found 0 own and 0 other
+```
+
+- **Position bias** scores identical content twice, once in each slot. Nothing
+  but slot order changes, so any difference is attributable to order alone.
+- **Verbosity bias** is measured against the *residual* - judge minus human -
+  not the raw score. Long answers are often genuinely better, so correlating
+  length with score just rediscovers that and would flag a well-calibrated
+  judge. Only the residual answers the actual question.
+- **Self-preference** says it could not be measured rather than returning a
+  reassuring zero. "Not measured" and "measured as unbiased" are different
+  claims about a judge.
+
+The detectors are validated by injecting a known bias into the stub and
+confirming they find it - which only works because the stub is neutral by
+construction:
+
+| | neutral stub | bias injected |
+| --- | --- | --- |
+| position | +0.000, 0/8 moved | **+0.922 pts, 8/8 moved, first slot** |
+| verbosity | -0.038 | **+0.563 correlation** |
 
 ## Design
 
@@ -144,7 +215,7 @@ worker pool scales horizontally.
 - [x] **Phase 0** - Foundations: packaging, ruff, mypy strict, pytest, CI
 - [x] **Phase 1** - Core library: models, rubrics, checks, judge, stub provider, runner
 - [x] **Phase 2** - CLI and self-contained HTML report
-- [ ] **Phase 3** - Bias controls and human calibration
+- [x] **Phase 3** - Bias controls and human calibration
 - [ ] **Phase 4** - Gemini and Groq providers
 - [ ] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose
 - [ ] **Phase 6** - Kubernetes: Kustomize, HPA, CronJob

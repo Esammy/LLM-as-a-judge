@@ -26,6 +26,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from judgekit.core.bias import (
+    measure_position_bias,
+    measure_self_preference,
+    measure_verbosity_bias,
+)
+from judgekit.core.calibration import calibrate_run
 from judgekit.core.errors import JudgekitError
 from judgekit.core.judge import Judge
 from judgekit.core.models import Dataset, Verdict
@@ -331,6 +337,134 @@ def rubric_diff(
     console.print(
         "\n[red]not comparable[/red] - scores under these two rubrics measure different things"
     )
+
+
+@app.command()
+def calibrate(
+    dataset_path: DatasetArg,
+    rubric_path: RubricOpt,
+    min_kappa: Annotated[
+        float | None,
+        typer.Option("--min-kappa", help="Exit 1 if quadratic kappa falls below this."),
+    ] = None,
+    concurrency: Annotated[int, typer.Option(help="Cases in flight at once.")] = 8,
+) -> None:
+    """Measure the judge against the dataset's human labels.
+
+    This is the command the project is named for. Everything else grades
+    answers; this grades the grader.
+    """
+    try:
+        dataset = Dataset.from_file(dataset_path)
+        rubric = Rubric.from_file(rubric_path)
+    except (JudgekitError, FileNotFoundError, ValueError) as exc:
+        _fail(str(exc))
+        return
+
+    if not dataset.labelled:
+        _fail(
+            f"{dataset.name} has no human labels, so there is nothing to measure "
+            "the judge against. Add `human_label` to some cases first."
+        )
+        return
+
+    provider = StubProvider()
+    result = asyncio.run(Runner(Judge(rubric, provider), concurrency=concurrency).run(dataset))
+
+    try:
+        report = calibrate_run(result.judgements, dataset, scale=rubric.scale)
+    except ValueError as exc:
+        _fail(str(exc))
+        return
+
+    table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2, 0, 0))
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_column("reading", style="dim")
+
+    rows: list[tuple[str, str, str]] = [
+        ("quadratic kappa", f"{report.quadratic_kappa:.3f}", report.interpretation),
+        (
+            "cohen kappa",
+            f"{report.cohens_kappa:.3f}",
+            "exact matches only; harsh on ordinal scales",
+        ),
+        ("krippendorff alpha", f"{report.krippendorff_alpha:.3f}", "interval reliability"),
+        ("spearman", f"{report.spearman:.3f}", "does it rank cases the way humans do?"),
+        ("pearson", f"{report.pearson:.3f}", ""),
+        ("mean abs error", f"{report.mean_absolute_error:.2f}", "scale points"),
+        ("systematic offset", f"{report.systematic_offset:+.2f}", "positive means generous"),
+        ("exact agreement", f"{report.exact_agreement:.0%}", ""),
+        ("within one point", f"{report.within_one:.0%}", ""),
+    ]
+    for name, value, reading in rows:
+        table.add_row(name, value, escape(reading))
+
+    console.print(table)
+    console.print()
+    console.print("[dim]confusion matrix (rows: human, columns: judge)[/dim]")
+    console.print(escape(report.confusion.render()))
+    console.print()
+    console.print(
+        f"[dim]n={report.n} labelled cases, judge mean {report.judge_mean:.2f} "
+        f"vs human mean {report.human_mean:.2f}[/dim]"
+    )
+
+    if report.systematic_offset and abs(report.systematic_offset) > 0.5:
+        # Worth separating from a ranking problem: they have different fixes.
+        direction = "generous" if report.systematic_offset > 0 else "harsh"
+        console.print(
+            f"[yellow]note[/yellow] the judge is systematically {direction} by "
+            f"{abs(report.systematic_offset):.2f} points. If Spearman is high, this is a "
+            "threshold problem rather than a rubric problem."
+        )
+
+    if min_kappa is not None and not report.meets(min_kappa=min_kappa):
+        _fail(f"quadratic kappa {report.quadratic_kappa:.3f} is below the required {min_kappa:.3f}")
+
+
+@app.command()
+def bias(
+    dataset_path: DatasetArg,
+    rubric_path: RubricOpt,
+    threshold: Annotated[
+        float, typer.Option(help="Magnitude above which a bias is called concerning.")
+    ] = 0.15,
+    fail_on_bias: Annotated[
+        bool, typer.Option("--fail-on-bias", help="Exit 1 if any bias exceeds the threshold.")
+    ] = False,
+) -> None:
+    """Measure position, verbosity and self-preference bias in the judge."""
+    try:
+        dataset = Dataset.from_file(dataset_path)
+        rubric = Rubric.from_file(rubric_path)
+    except (JudgekitError, FileNotFoundError, ValueError) as exc:
+        _fail(str(exc))
+        return
+
+    judge = Judge(rubric, StubProvider())
+    result = asyncio.run(Runner(judge).run(dataset))
+
+    findings = [
+        asyncio.run(measure_position_bias(judge, dataset.cases, threshold=threshold)),
+        measure_verbosity_bias(result.judgements, dataset, scale=rubric.scale, threshold=threshold),
+        measure_self_preference(
+            result.judgements, dataset, judge_family=judge.provider.family, threshold=threshold
+        ),
+    ]
+
+    for finding in findings:
+        colour = "red" if finding.concerning else "green"
+        mark = "!" if finding.concerning else "ok"
+        console.print(
+            f"[{colour}]{mark}[/{colour}] [bold]{finding.kind}[/bold] "
+            f"{finding.magnitude:+.3f} {finding.unit} (n={finding.n})"
+        )
+        console.print(f"    [dim]{escape(finding.detail)}[/dim]")
+
+    concerning = [f for f in findings if f.concerning]
+    if concerning and fail_on_bias:
+        _fail(f"{len(concerning)} bias measurement(s) exceed the {threshold} threshold")
 
 
 if __name__ == "__main__":  # pragma: no cover

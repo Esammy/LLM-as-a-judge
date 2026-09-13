@@ -1,0 +1,28 @@
+# minikube. Small, fast, and honest about what it cannot demonstrate.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: judgekit
+
+resources:
+  - ../../base
+
+patches:
+  - path: small.yaml
+    target:
+      kind: Deployment
+      name: api
+  - path: small.yaml
+    target:
+      kind: Deployment
+      name: worker
+  - path: hpa-cpu.yaml
+  - path: no-ingress-policy.yaml
+
+images:
+  - name: ghcr.io/esammy/judgekit-api
+    newName: judgekit-api
+    newTag: dev
+  - name: ghcr.io/esammy/judgekit-worker
+    newName: judgekit-worker
+    newTag: dev

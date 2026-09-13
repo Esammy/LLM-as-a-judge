@@ -56,8 +56,20 @@ compose-down: ## Tear the local stack down
 compose-logs: ## Follow the stack's logs
 	docker compose -f deploy/docker-compose.yml logs -f api worker
 
+k8s-demo: ## Build, deploy to minikube, load it and watch the pool scale
+	./deploy/k8s/demo.sh
+
 k8s-up: ## Deploy to the local minikube cluster
 	kubectl apply -k deploy/k8s/overlays/local
+
+k8s-render: ## Render the production manifests without applying them
+	kubectl kustomize deploy/k8s/overlays/prod
+
+k8s-validate: ## Validate every overlay renders
+	kubectl kustomize deploy/k8s/base > /dev/null
+	kubectl kustomize deploy/k8s/overlays/local > /dev/null
+	kubectl kustomize deploy/k8s/overlays/prod > /dev/null
+	@echo "all overlays render"
 
 k8s-down: ## Remove the local deployment
 	kubectl delete -k deploy/k8s/overlays/local --ignore-not-found

@@ -102,6 +102,18 @@ services:
     # No ports and no replicas pinned here: `--scale worker=N` is the point.
     restart: unless-stopped
 
+  dashboard:
+    build:
+      context: ../dashboard
+    environment:
+      # Server-side fetches go over the compose network, not via localhost.
+      JUDGEKIT_API_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:

@@ -1,0 +1,120 @@
+name: Images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: judgekit-api
+            context: .
+            file: deploy/docker/Dockerfile
+            target: api
+          - image: judgekit-worker
+            context: .
+            file: deploy/docker/Dockerfile
+            target: worker
+          - image: judgekit-dashboard
+            context: dashboard
+            file: dashboard/Dockerfile
+            target: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Only on pushes: a pull request from a fork has no write token, and the
+        # build is still worth running to prove the image compiles.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Scan for vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:sha-${{ github.sha }}
+          format: sarif
+          output: trivy-${{ matrix.image }}.sarif
+          severity: CRITICAL,HIGH
+          # Reported, not blocking. A base-image CVE with no fix available
+          # should not stop a release that does not depend on it; the findings
+          # land in the security tab where they can be judged.
+          exit-code: "0"
+
+      - name: Upload findings
+        if: always() && github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: ${{ matrix.image }}
+
+  manifests:
+    name: Validate Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
+
+      - name: Every overlay must render
+        run: |
+          for overlay in base overlays/local overlays/prod; do
+            echo "--- deploy/k8s/$overlay"
+            kubectl kustomize "deploy/k8s/$overlay" > /dev/null
+          done
+
+      - name: The production overlay must not carry a Secret
+        # Committed credentials are the failure mode this guards against: the
+        # base ships a placeholder so `apply -k` works from a clean checkout,
+        # and prod deletes it so a missing secret store fails the deploy rather
+        # than silently using empty values.
+        run: |
+          if kubectl kustomize deploy/k8s/overlays/prod | grep -q "^kind: Secret"; then
+            echo "::error::the prod overlay renders a Secret; it must come from a secret store"
+            exit 1
+          fi
+          echo "ok: no Secret in the prod overlay"

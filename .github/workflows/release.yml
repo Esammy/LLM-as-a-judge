@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Full gate before anything is published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy
+      - run: uv run pytest --cov --cov-report=term
+      - run: uv run judgekit rubric verify
+
+  publish:
+    name: Publish to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Trusted publishing: no long-lived PyPI token stored as a secret.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build the distributions
+        run: uv build
+
+      - name: The tag must match the package version
+        # A tag and a version that disagree produce a release nobody can find
+        # again. Cheap to check, expensive to discover later.
+        run: |
+          version="$(uv run python -c 'import judgekit; print(judgekit.__version__)')"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::tag $tag does not match __version__ $version"
+            exit 1
+          fi
+          echo "ok: $tag"
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

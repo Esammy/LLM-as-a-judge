@@ -49,10 +49,33 @@ April, so calibration is a recurring job rather than a one-off.
 ```bash
 # no API key needed - the default provider is deterministic
 uv sync --extra dev
-uv run pytest
+uv run pytest          # 216 tests, offline, under two seconds
 ```
 
-_Planned:_
+Judge a dataset from Python today:
+
+```python
+import asyncio
+from judgekit.core.judge import Judge
+from judgekit.core.models import Dataset
+from judgekit.core.rubric import Rubric
+from judgekit.core.runner import Runner, compare
+from judgekit.providers.stub import StubProvider
+
+dataset = Dataset.from_file("datasets/example.jsonl")
+rubric = Rubric.from_file("rubrics/answer-quality.v2.yaml")
+
+result = asyncio.run(Runner(Judge(rubric, StubProvider())).run(dataset))
+print(f"{result.pass_rate:.0%} passed, mean {result.mean_score:.2f}")
+
+# Comparing across a rubric version raises rather than returning a
+# number that looks meaningful and is not.
+v1 = Rubric.from_file("rubrics/answer-quality.v1.yaml")
+old = asyncio.run(Runner(Judge(v1, StubProvider())).run(dataset))
+compare(old, result)   # IncomparableScoresError: rubric differs in version
+```
+
+_Planned (CLI, phase 2):_
 
 ```bash
 judgekit run datasets/example.jsonl --rubric rubrics/v2.yaml --out report.html
@@ -92,7 +115,7 @@ worker pool scales horizontally.
 ## Roadmap
 
 - [x] **Phase 0** - Foundations: packaging, ruff, mypy strict, pytest, CI
-- [ ] **Phase 1** - Core library: models, rubrics, checks, judge, stub provider, runner
+- [x] **Phase 1** - Core library: models, rubrics, checks, judge, stub provider, runner
 - [ ] **Phase 2** - CLI and self-contained HTML report
 - [ ] **Phase 3** - Bias controls and human calibration
 - [ ] **Phase 4** - Gemini and Groq providers

@@ -18,8 +18,9 @@ default provider is the deterministic stub.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, TypeVar
 
 import typer
 from rich.console import Console
@@ -27,6 +28,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from judgekit.core.bias import (
+    BiasFinding,
     measure_position_bias,
     measure_self_preference,
     measure_verbosity_bias,
@@ -44,7 +46,8 @@ from judgekit.core.rubric import (
     write_lock,
 )
 from judgekit.core.runner import Runner, RunResult, compare
-from judgekit.providers.stub import StubProvider
+from judgekit.providers.base import Provider
+from judgekit.providers.registry import available, close_provider, create_provider
 
 app = typer.Typer(
     name="judgekit",
@@ -62,9 +65,53 @@ err_console = Console(stderr=True)
 
 GATE_FAILED = 1
 
+T = TypeVar("T")
+
 DatasetArg = Annotated[Path, typer.Argument(help="Dataset file (.jsonl, .json or .yaml).")]
 RubricOpt = Annotated[Path, typer.Option("--rubric", "-r", help="Rubric file to grade under.")]
 RubricDirOpt = Annotated[Path, typer.Option("--dir", "-d", help="Directory holding rubrics.")]
+ProviderOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--provider",
+        "-p",
+        help=(
+            f"Judge provider ({', '.join(available())}). Defaults to the "
+            "deterministic offline stub, which needs no key and no network."
+        ),
+    ),
+]
+
+
+def _provider(name: str | None) -> Provider:
+    """Resolve a provider, turning a missing key into a gate failure."""
+    try:
+        return create_provider(name)
+    except JudgekitError as exc:
+        _fail(str(exc))
+        raise
+
+
+def _with_judge(
+    rubric: Rubric,
+    provider_name: str | None,
+    work: Callable[[Judge], Coroutine[Any, Any, T]],
+) -> T:
+    """Build a judge, run one coroutine with it, and always release the provider.
+
+    Real providers hold an open HTTP client. Leaking one per invocation is
+    harmless in a short-lived CLI process and sloppy everywhere else, so the
+    lifecycle lives in one place rather than at each call site.
+    """
+    judge = Judge(rubric, _provider(provider_name))
+
+    async def go() -> T:
+        try:
+            return await work(judge)
+        finally:
+            await close_provider(judge.provider)
+
+    return asyncio.run(go())
 
 
 def _fail(message: str) -> None:
@@ -130,6 +177,7 @@ def run(
         typer.Option("--min-pass-rate", help="Exit 1 if the pass rate falls below this (0-1)."),
     ] = None,
     domain: Annotated[str | None, typer.Option(help="Only run cases in this domain.")] = None,
+    provider: ProviderOpt = None,
 ) -> None:
     """Judge a dataset and report the results."""
     try:
@@ -145,8 +193,9 @@ def run(
             _fail(f"no cases in domain {domain!r}")
             return
 
-    judge = Judge(rubric, StubProvider())
-    result = asyncio.run(Runner(judge, concurrency=concurrency).run(dataset))
+    result = _with_judge(
+        rubric, provider, lambda judge: Runner(judge, concurrency=concurrency).run(dataset)
+    )
 
     _print_summary(result, dataset)
 
@@ -348,6 +397,7 @@ def calibrate(
         typer.Option("--min-kappa", help="Exit 1 if quadratic kappa falls below this."),
     ] = None,
     concurrency: Annotated[int, typer.Option(help="Cases in flight at once.")] = 8,
+    provider: ProviderOpt = None,
 ) -> None:
     """Measure the judge against the dataset's human labels.
 
@@ -368,8 +418,9 @@ def calibrate(
         )
         return
 
-    provider = StubProvider()
-    result = asyncio.run(Runner(Judge(rubric, provider), concurrency=concurrency).run(dataset))
+    result = _with_judge(
+        rubric, provider, lambda judge: Runner(judge, concurrency=concurrency).run(dataset)
+    )
 
     try:
         report = calibrate_run(result.judgements, dataset, scale=rubric.scale)
@@ -433,6 +484,7 @@ def bias(
     fail_on_bias: Annotated[
         bool, typer.Option("--fail-on-bias", help="Exit 1 if any bias exceeds the threshold.")
     ] = False,
+    provider: ProviderOpt = None,
 ) -> None:
     """Measure position, verbosity and self-preference bias in the judge."""
     try:
@@ -442,16 +494,22 @@ def bias(
         _fail(str(exc))
         return
 
-    judge = Judge(rubric, StubProvider())
-    result = asyncio.run(Runner(judge).run(dataset))
+    async def measure(judge: Judge) -> list[BiasFinding]:
+        result = await Runner(judge).run(dataset)
+        return [
+            await measure_position_bias(judge, dataset.cases, threshold=threshold),
+            measure_verbosity_bias(
+                result.judgements, dataset, scale=rubric.scale, threshold=threshold
+            ),
+            measure_self_preference(
+                result.judgements,
+                dataset,
+                judge_family=judge.provider.family,
+                threshold=threshold,
+            ),
+        ]
 
-    findings = [
-        asyncio.run(measure_position_bias(judge, dataset.cases, threshold=threshold)),
-        measure_verbosity_bias(result.judgements, dataset, scale=rubric.scale, threshold=threshold),
-        measure_self_preference(
-            result.judgements, dataset, judge_family=judge.provider.family, threshold=threshold
-        ),
-    ]
+    findings = _with_judge(rubric, provider, measure)
 
     for finding in findings:
         colour = "red" if finding.concerning else "green"

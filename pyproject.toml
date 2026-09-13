@@ -40,10 +40,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-providers = [
-    "google-genai>=1.0",
-    "groq>=0.13",
-]
+# No provider SDKs on purpose. Gemini and Groq are each a single HTTP POST, and
+# httpx is already a core dependency, so two large transitive dependency trees
+# would buy nothing. It also means the Groq adapter works against any
+# OpenAI-compatible host by changing one URL.
 service = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -130,7 +130,7 @@ pretty = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["groq.*", "google.genai.*", "arq.*"]
+module = ["arq.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -142,9 +142,14 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "-ra",
+    # Deselected by default, not merely skipped. A developer with GEMINI_API_KEY
+    # exported should be able to run `pytest` without it silently reaching the
+    # network and spending their money. Run them deliberately: `pytest -m live`.
+    "-m",
+    "not live",
 ]
 markers = [
-    "live: requires a real provider API key; skipped by default",
+    "live: hits a real provider; deselected by default, run with `pytest -m live`",
 ]
 
 [tool.coverage.run]

@@ -49,7 +49,7 @@ April, so calibration is a recurring job rather than a one-off.
 ```bash
 # no API key needed - the default provider is deterministic
 uv sync --extra dev
-uv run pytest          # 315 tests, offline, in about three seconds
+uv run pytest          # 363 tests, offline, in about four seconds
 ```
 
 Judge a dataset from Python today:
@@ -181,6 +181,43 @@ construction:
 | position | +0.000, 0/8 moved | **+0.922 pts, 8/8 moved, first slot** |
 | verbosity | -0.038 | **+0.563 correlation** |
 
+## Providers
+
+```bash
+judgekit run datasets/example.jsonl -r rubrics/answer-quality.v2.yaml   # stub, offline
+GEMINI_API_KEY=... judgekit run ... -p gemini
+GROQ_API_KEY=...   judgekit run ... -p groq
+```
+
+**No provider SDKs.** Each of these APIs is a single HTTP POST and `httpx` is
+already a dependency, so importing two large transitive dependency trees would
+buy nothing. It also means the Groq adapter speaks the OpenAI chat-completions
+shape, and therefore works against any OpenAI-compatible host - Together,
+Fireworks, OpenRouter, vLLM, Ollama, OpenAI itself - by changing one URL:
+
+```python
+GroqProvider(base_url="http://localhost:11434/v1", family="local")
+```
+
+**The default is always the stub.** Nothing reaches the network unless a
+provider is named, so a mistyped flag or an unset variable degrades to a
+deterministic offline judge rather than quietly spending money. Every provider
+test runs through `httpx.MockTransport`, so the whole suite is offline; the two
+tests that hit a real endpoint are marked `live` and **deselected by default**,
+because a developer with a key exported should still be able to run `pytest`
+without it costing anything.
+
+What the shared HTTP layer handles:
+
+- **Client-side rate limiting** via a shared token bucket. Free tiers are tight
+  (~15 rpm on Gemini, ~30 on Groq) and the runner fans out, so without this the
+  first thing a new user sees is a wall of 429s they read as a bug.
+- **Backoff that honours `Retry-After`.** Guessing a delay the server already
+  told you is both ruder and slower.
+- **Refusing to retry what cannot succeed.** A 401 is not transient; retrying it
+  three times turns "your key is wrong" into a slow, confusing failure.
+- **Token and cost accounting** per model, so a run reports what it spent.
+
 ## Design
 
 Evaluation is slow, I/O-bound and embarrassingly parallel, which is the whole reason the
@@ -216,7 +253,7 @@ worker pool scales horizontally.
 - [x] **Phase 1** - Core library: models, rubrics, checks, judge, stub provider, runner
 - [x] **Phase 2** - CLI and self-contained HTML report
 - [x] **Phase 3** - Bias controls and human calibration
-- [ ] **Phase 4** - Gemini and Groq providers
+- [x] **Phase 4** - Gemini and Groq providers
 - [ ] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose
 - [ ] **Phase 6** - Kubernetes: Kustomize, HPA, CronJob
 - [ ] **Phase 7** - Next.js dashboard, docs, first release

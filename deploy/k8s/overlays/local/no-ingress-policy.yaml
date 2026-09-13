@@ -1,0 +1,8 @@
+# minikube's ingress addon does not label its namespace the way the base policy
+# expects, so the default-deny would make the API unreachable. Removed here
+# rather than loosened in the base, where it belongs.
+$patch: delete
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress

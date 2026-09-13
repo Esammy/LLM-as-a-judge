@@ -1,0 +1,10 @@
+# One replica each, tiny requests: minikube usually has a couple of cores.
+- op: replace
+  path: /spec/replicas
+  value: 1
+- op: replace
+  path: /spec/template/spec/containers/0/resources/requests/cpu
+  value: 50m
+- op: replace
+  path: /spec/template/spec/containers/0/resources/requests/memory
+  value: 128Mi

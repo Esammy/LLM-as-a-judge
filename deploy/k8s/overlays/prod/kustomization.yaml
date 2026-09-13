@@ -1,0 +1,27 @@
+# Production. Pinned image digests, real replica counts, no committed secrets.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: judgekit
+
+resources:
+  - ../../base
+
+patches:
+  - path: replicas.yaml
+    target:
+      kind: Deployment
+      name: api
+
+# The committed Secret exists so `apply -k` works from a clean checkout. A real
+# cluster replaces it: External Secrets, Sealed Secrets, or the cloud provider's
+# store. Deleting it here makes that a deployment-time failure rather than a
+# silent fallback to empty credentials.
+  - path: remove-secret.yaml
+
+images:
+  # Tags are mutable; digests are not. Pin these in CI on release.
+  - name: ghcr.io/esammy/judgekit-api
+    newTag: v0.1.0
+  - name: ghcr.io/esammy/judgekit-worker
+    newTag: v0.1.0

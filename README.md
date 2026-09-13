@@ -278,6 +278,38 @@ Logs are JSON by default, since a container's stdout is read by a machine first:
  "mean_score":3.306,"errored":0,"cost_usd":0.0,"duration_s":0.0}
 ```
 
+## Kubernetes
+
+```bash
+./deploy/k8s/demo.sh    # build, deploy to minikube, queue 30 runs, watch it scale
+```
+
+Plenty of projects attach an HPA to something that cannot usefully scale
+horizontally. This one can, for a specific reason: **judging spends almost all
+of its time waiting on a provider.** Runs are slow, I/O-bound and embarrassingly
+parallel, so "the queue is deep" really is answered by "add pods". If that were
+not true these manifests would be decoration, and the honest move would be to
+delete them.
+
+That same property makes **CPU the wrong scaling signal.** An overloaded worker
+sits near-idle while saturating a rate limit, so a CPU-target HPA refuses to
+scale exactly when the backlog is worst. The base HPA scales on
+`judgekit_queue_depth` instead, delivered as an external metric through
+prometheus-adapter. The minikube overlay patches in a CPU-based HPA because a
+default cluster has no such pipeline - a documented compromise for the demo, not
+the recommendation.
+
+Also in there: separate liveness and readiness probes, a 300-second termination
+grace period so a worker is never killed mid-run, fast scale-up with slow
+scale-down, default-deny NetworkPolicies, a migration Job, and a nightly
+calibration CronJob - because judges drift, so calibration is recurring work.
+
+Details and the reasoning: [deploy/k8s/README.md](deploy/k8s/README.md).
+
+> **Verification status.** The manifests render and validate cleanly. The
+> container build and a live cluster deploy have not been run in the environment
+> this was written in, which has no Docker daemon. `demo.sh` verifies both.
+
 ## Design
 
 Evaluation is slow, I/O-bound and embarrassingly parallel, which is the whole reason the
@@ -315,7 +347,7 @@ worker pool scales horizontally.
 - [x] **Phase 3** - Bias controls and human calibration
 - [x] **Phase 4** - Gemini and Groq providers
 - [x] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose
-- [ ] **Phase 6** - Kubernetes: Kustomize, HPA, CronJob
+- [x] **Phase 6** - Kubernetes: Kustomize, HPA, CronJob
 - [ ] **Phase 7** - Next.js dashboard, docs, first release
 
 ## Development

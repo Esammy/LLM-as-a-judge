@@ -1,0 +1,30 @@
+# A CPU-based stand-in, used ONLY here.
+#
+# The base HPA scales on judgekit_queue_depth, which is the correct signal: the
+# work is I/O-bound, so an overloaded worker is waiting on a provider rather
+# than burning CPU. Reaching the HPA with that metric needs prometheus-adapter,
+# which a default minikube does not have.
+#
+# CPU is therefore a deliberate compromise for the local demo. It is the wrong
+# signal for this workload and is documented as such rather than quietly
+# swapped in - a CPU-target HPA on I/O-bound work will refuse to scale at
+# exactly the moment the backlog is worst.
+#
+# To see the real behaviour locally:
+#   minikube addons enable metrics-server
+#   helm install prometheus-adapter prometheus-community/prometheus-adapter
+# then drop this patch.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+spec:
+  minReplicas: 1
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60

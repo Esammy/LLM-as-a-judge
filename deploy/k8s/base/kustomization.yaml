@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: judgekit
+
+# `labels` rather than the deprecated `commonLabels`, and deliberately with
+# includeSelectors: false. commonLabels injects into selectors too, which makes
+# a label change a breaking change - Deployment selectors are immutable, so the
+# next apply fails and has to be resolved by deleting the Deployment. Every
+# selector here is already explicit via app.kubernetes.io/component.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: judgekit
+      app.kubernetes.io/part-of: judgekit
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - postgres.yaml
+  - redis.yaml
+  - api.yaml
+  - worker.yaml
+  - jobs.yaml
+  - network.yaml
+
+images:
+  - name: ghcr.io/esammy/judgekit-api
+    newTag: latest
+  - name: ghcr.io/esammy/judgekit-worker
+    newTag: latest

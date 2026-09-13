@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: worker
+    spec:
+      # A worker finishes its current run before exiting. Judging a large
+      # dataset takes minutes, and killing it mid-run wastes every provider
+      # call already paid for.
+      terminationGracePeriodSeconds: 300
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: ghcr.io/esammy/judgekit-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: judgekit-config }
+            - secretRef: { name: judgekit-secrets }
+
+          # No HTTP probes: a worker serves nothing. Whether it is doing useful
+          # work is a queue-depth question, not a liveness one.
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# The autoscaler, and the reason Kubernetes earns its place in this project at
+# all.
+#
+# Judging is slow, I/O-bound and embarrassingly parallel: a run spends nearly
+# all of its time waiting on a provider. That makes "more pods" a genuine answer
+# to "the queue is deep", which is not true of most workloads people attach an
+# HPA to.
+#
+# It also makes CPU the WRONG signal. An I/O-bound worker sits near-idle while
+# saturating a rate limit, so a CPU-target HPA would refuse to scale exactly
+# when the backlog is worst. The honest signal is queue depth, which the API
+# exports as judgekit_queue_depth and which reaches the HPA as an external
+# metric via prometheus-adapter.
+#
+# See overlays/local for a CPU-based stand-in used on minikube, where that
+# metrics pipeline is not installed.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: judgekit_queue_depth
+        target:
+          # Roughly two queued runs per worker before adding another.
+          type: AverageValue
+          averageValue: "2"
+  behavior:
+    scaleUp:
+      # Backlog is the thing being fixed, so react quickly.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      # Slowly. A worker killed mid-run wastes provider calls already paid for,
+      # and a queue that just drained is often about to fill again.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker

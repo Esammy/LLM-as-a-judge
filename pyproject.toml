@@ -111,7 +111,11 @@ ignore = [
 known-first-party = ["judgekit"]
 
 [tool.mypy]
-python_version = "3.11"
+# No `python_version` pin on purpose. Pinning it to 3.11 makes mypy parse
+# numpy's bundled stubs under 3.11 rules, where their 3.12+ `type` statements
+# are a syntax error that aborts the whole run. Real 3.11 compatibility is
+# covered better anyway: ruff's target-version keeps our syntax 3.11-safe and
+# CI runs the test matrix on an actual 3.11 interpreter.
 strict = true
 warn_unreachable = true
 warn_no_return = true

@@ -1,0 +1,52 @@
+# The evidence-aware replacement for v1.
+#
+# The change that matters: the judge is now shown the tool calls and retrieved
+# context behind an answer, and groundedness is scored as its own criterion
+# rather than being folded into a vague notion of correctness.
+#
+# This exists as v2 rather than as an edit to v1 because scores produced under
+# the two are not comparable. Bumping the version is what makes that visible
+# instead of silent - `judgekit rubric verify` fails a build that edits a
+# locked rubric in place.
+
+id: answer-quality
+version: v2
+description: Evidence-aware grading with groundedness scored explicitly.
+
+requires_evidence: true
+
+scale:
+  minimum: 1
+  maximum: 5
+  pass_at: 4
+
+criteria:
+  - id: groundedness
+    description: >-
+      Does every figure and factual claim trace back to the supplied evidence?
+      If evidence is present and a figure does not appear in it, score low. If
+      no evidence was supplied at all, do not penalise the answer - it is
+      unverifiable rather than wrong.
+    weight: 3.0
+  - id: correctness
+    description: >-
+      Is the answer right and responsive to what was actually asked?
+    weight: 2.0
+  - id: completeness
+    description: >-
+      Does it cover what the question needed, without padding to look thorough?
+    weight: 1.0
+  - id: clarity
+    description: >-
+      Is it clearly written, direct, and free of hedging?
+    weight: 1.0
+
+instructions: |-
+  Grade the answer below against the criteria.
+
+  Score each criterion from 1 to 5, where 1 is unacceptable and 5 is exemplary.
+  A weighted score of 4 or above means the answer is good enough to ship.
+
+  Groundedness carries the most weight on purpose. An answer that is fluent,
+  well structured and states a number nothing supports is worse than a blunt
+  answer that stays within what the evidence shows.

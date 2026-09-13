@@ -6,8 +6,8 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
-> **Status: early development.** The core library and CLI are being built in the open.
-> Sections marked _planned_ are not implemented yet. See [Roadmap](#roadmap).
+> **Status: v0.1.0.** Library, CLI, providers, service, Kubernetes manifests and
+> dashboard are all implemented. 436 tests, no API key and no network required.
 
 ---
 
@@ -310,6 +310,36 @@ Details and the reasoning: [deploy/k8s/README.md](deploy/k8s/README.md).
 > container build and a live cluster deploy have not been run in the environment
 > this was written in, which has no Docker daemon. `demo.sh` verifies both.
 
+## Dashboard
+
+```bash
+cd dashboard && npm install && npm run dev      # http://localhost:3000
+```
+
+Run history, per-case drill-down with flags and judge reasoning, and a pass-rate
+trend.
+
+The trend is the part worth noting. It draws `GET /runs/{id}/history`, which the
+API scopes to **one dataset and one rubric fingerprint** - and the page says so
+underneath the chart. A quality line that silently spans a rubric change is the
+single most convincing wrong answer an eval dashboard can give you, so the
+scoping is enforced server-side rather than left as a filter somebody might
+forget to apply.
+
+The run list shows the fingerprint in its own column for the same reason: two
+rows under the same rubric id and version but different fingerprints are not
+comparable, and that is what a reader needs to notice before drawing a
+conclusion from the column beside it.
+
+## Documentation
+
+- [Measuring the judge](docs/measuring-the-judge.md) - calibration, the four
+  bias modes, and why plain Cohen's kappa is the wrong headline
+- [Architecture](docs/architecture.md) - the layers and the decisions behind them
+- [Kubernetes](deploy/k8s/README.md) - why the HPA is justified, and why CPU is
+  the wrong signal
+- [Contributing](CONTRIBUTING.md) &middot; [Security](SECURITY.md)
+
 ## Design
 
 Evaluation is slow, I/O-bound and embarrassingly parallel, which is the whole reason the
@@ -348,7 +378,7 @@ worker pool scales horizontally.
 - [x] **Phase 4** - Gemini and Groq providers
 - [x] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose
 - [x] **Phase 6** - Kubernetes: Kustomize, HPA, CronJob
-- [ ] **Phase 7** - Next.js dashboard, docs, first release
+- [x] **Phase 7** - Next.js dashboard, docs, first release
 
 ## Development
 

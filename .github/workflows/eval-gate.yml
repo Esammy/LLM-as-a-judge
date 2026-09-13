@@ -1,0 +1,69 @@
+# judgekit, applied to judgekit.
+#
+# Every guarantee this project offers its users is enforced here against the
+# project itself. A tool that ships a rubric lockfile and does not run
+# `rubric verify` in its own CI is asking for trust it has not earned.
+name: Eval gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  JUDGEKIT_PROVIDER: stub
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --extra dev
+
+      - name: Rubrics match the lockfile
+        # Fails if a published rubric was edited without a version bump, which
+        # would make every score on either side of the edit quietly
+        # incomparable. Nothing else in a normal pipeline would notice.
+        run: uv run judgekit rubric verify
+
+      - name: Datasets load
+        run: uv run judgekit validate datasets/example.jsonl
+
+      - name: Quality gate
+        run: |
+          uv run judgekit run datasets/example.jsonl \
+            --rubric rubrics/answer-quality.v2.yaml \
+            --save candidate.json \
+            --out report.html
+
+      - name: The judge still agrees with the humans
+        # The calibration floor. If this drops, either the judge drifted or the
+        # stub stopped being a plausible stand-in - and both are findings worth
+        # blocking a merge over.
+        run: |
+          uv run judgekit calibrate datasets/example.jsonl \
+            --rubric rubrics/answer-quality.v2.yaml \
+            --min-kappa 0.6
+
+      - name: The judge is not measurably biased
+        run: |
+          uv run judgekit bias datasets/example.jsonl \
+            --rubric rubrics/answer-quality.v2.yaml \
+            --threshold 0.15 \
+            --fail-on-bias
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            report.html
+            candidate.json
+          retention-days: 14

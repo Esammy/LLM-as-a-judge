@@ -49,7 +49,7 @@ April, so calibration is a recurring job rather than a one-off.
 ```bash
 # no API key needed - the default provider is deterministic
 uv sync --extra dev
-uv run pytest          # 363 tests, offline, in about four seconds
+uv run pytest          # 436 tests, offline, in about ten seconds
 ```
 
 Judge a dataset from Python today:
@@ -218,6 +218,66 @@ What the shared HTTP layer handles:
   three times turns "your key is wrong" into a slow, confusing failure.
 - **Token and cost accounting** per model, so a run reports what it spent.
 
+## Running it as a service
+
+The CLI is enough for CI. The service exists for the case the CLI cannot serve:
+storing eval history so it can be looked at over time, and scaling the work
+horizontally.
+
+```bash
+# Standalone. SQLite, the stub provider, jobs run in-process.
+# Nothing else needs to be installed.
+make api
+
+# The full stack: Postgres, Redis, API and a worker pool.
+docker compose -f deploy/docker-compose.yml up --build
+
+curl -X POST localhost:8000/runs -H 'content-type: application/json'      -d '{"dataset":"example.jsonl","rubric":"answer-quality.v2.yaml"}'
+# {"run_id":"01cbbc57d33e","status":"queued"}
+
+curl localhost:8000/runs/01cbbc57d33e
+```
+
+| | |
+| --- | --- |
+| `POST /runs` | Queue a dataset. 202 with a run id |
+| `GET /runs` | Recent runs; filter by `rubric_fingerprint`, dataset, status |
+| `GET /runs/{id}` | One run with every judgement |
+| `GET /runs/{id}/history` | Runs that are **safe to chart alongside** this one |
+| `POST /compare` | Diff two runs; **409** if they are not comparable |
+| `/healthz` `/readyz` `/metrics` | Liveness, readiness, Prometheus |
+
+Four decisions worth naming:
+
+**The fingerprint is stored on every row.** Once results live in a database they
+outlive the rubric file that produced them, and the first thing anyone does with
+stored history is plot it. Without the fingerprint travelling alongside the
+score, that chart will eventually splice together runs graded under different
+rules - the same failure this project prevents at the CLI, reappearing at the
+storage layer. `GET /runs/{id}/history` returns only same-dataset, same-
+fingerprint runs for exactly that reason.
+
+**`/healthz` and `/readyz` are not the same endpoint.** Liveness answers "is this
+process alive" and deliberately touches nothing; readiness checks the database.
+Wiring both to one handler is how a healthy pod gets restarted because Postgres
+was briefly slow.
+
+**`POST /compare` returns 409, not a number.** The request was well formed and
+both runs exist - but answering it across a rubric change would produce
+something that looks like evidence and is not.
+
+**A failed run records why.** Jobs write `failed` with the reason rather than
+vanishing, because a job that disappears is far harder to diagnose than one that
+explains itself.
+
+Logs are JSON by default, since a container's stdout is read by a machine first:
+
+```json
+{"ts":"2026-09-13T19:59:08","level":"INFO","logger":"judgekit.worker.tasks",
+ "message":"run completed","run_id":"01cbbc57d33e","pass_rate":0.125,
+ "mean_score":3.306,"errored":0,"cost_usd":0.0,"duration_s":0.0}
+```
+
 ## Design
 
 Evaluation is slow, I/O-bound and embarrassingly parallel, which is the whole reason the
@@ -254,7 +314,7 @@ worker pool scales horizontally.
 - [x] **Phase 2** - CLI and self-contained HTML report
 - [x] **Phase 3** - Bias controls and human calibration
 - [x] **Phase 4** - Gemini and Groq providers
-- [ ] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose
+- [x] **Phase 5** - Postgres, FastAPI, arq worker, docker-compose
 - [ ] **Phase 6** - Kubernetes: Kustomize, HPA, CronJob
 - [ ] **Phase 7** - Next.js dashboard, docs, first release
 

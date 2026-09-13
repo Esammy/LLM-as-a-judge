@@ -1,0 +1,107 @@
+# The full stack locally: Postgres, Redis, the API and a worker pool.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+#   curl -X POST localhost:8000/runs \
+#        -d '{"dataset":"example.jsonl","rubric":"answer-quality.v2.yaml"}' \
+#        -H 'content-type: application/json'
+#
+# Scale the pool to watch the queue drain faster:
+#   docker compose -f deploy/docker-compose.yml up -d --scale worker=4
+
+name: judgekit
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://judgekit:judgekit@postgres:5432/judgekit
+  REDIS_URL: redis://redis:6379/0
+  JUDGEKIT_PROVIDER: ${JUDGEKIT_PROVIDER:-stub}
+  JUDGEKIT_RUBRIC_DIR: /app/rubrics
+  JUDGEKIT_DATASET_DIR: /app/datasets
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: "true"
+  # Passed through but unset by default. The stub provider needs neither.
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: judgekit
+      POSTGRES_PASSWORD: judgekit
+      POSTGRES_DB: judgekit
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Dependants wait for this rather than sleeping and hoping.
+      test: ["CMD-SHELL", "pg_isready -U judgekit -d judgekit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  migrate:
+    build:
+      context: ../
+      dockerfile: deploy/docker/Dockerfile
+      target: api
+    environment: *app-env
+    # Runs to completion before anything serves traffic, so the API never
+    # starts against a schema that does not exist yet.
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../
+      dockerfile: deploy/docker/Dockerfile
+      target: api
+    environment:
+      <<: *app-env
+      JUDGEKIT_QUEUE: arq
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../
+      dockerfile: deploy/docker/Dockerfile
+      target: worker
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No ports and no replicas pinned here: `--scale worker=N` is the point.
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

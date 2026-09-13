@@ -55,6 +55,15 @@ service = [
 ]
 dev = [
     "pytest>=8.3",
+    # SQLAlchemy lets the suite run against in-memory SQLite while production
+    # uses Postgres, so storage is covered without a database in CI.
+    "aiosqlite>=0.20",
+    "asgi-lifespan>=2.1",
+    # Alembic stamps migrations in UTC, and Python's zoneinfo has no system
+    # tz database on Windows. Without this, `alembic revision` fails there
+    # with "Can't locate timezone: UTC" - a papercut for any contributor
+    # not on Linux.
+    "tzdata>=2024.2; sys_platform == 'win32'",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "ruff>=0.9",

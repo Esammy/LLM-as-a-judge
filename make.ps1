@@ -33,11 +33,15 @@ switch ($Target) {
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Force -ErrorAction SilentlyContinue .coverage, coverage.xml
     }
+    "api"          { & $uv run uvicorn judgekit.api.app:app --reload --port 8000 }
+    "worker"       { & $uv run arq judgekit.worker.main.WorkerSettings }
+    "migrate"      { & $uv run alembic upgrade head }
     "compose-up"   { docker compose -f deploy/docker-compose.yml up -d }
+    "compose-logs" { docker compose -f deploy/docker-compose.yml logs -f api worker }
     "compose-down" { docker compose -f deploy/docker-compose.yml down -v }
     "k8s-up"       { kubectl apply -k deploy/k8s/overlays/local }
     "k8s-down"     { kubectl delete -k deploy/k8s/overlays/local --ignore-not-found }
     default {
-        Write-Host "Targets: install lint fmt typecheck test cov check clean compose-up compose-down k8s-up k8s-down"
+        Write-Host "Targets: install lint fmt typecheck test cov check clean api worker migrate compose-up compose-down compose-logs k8s-up k8s-down"
     }
 }

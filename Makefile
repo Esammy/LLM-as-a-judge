@@ -32,6 +32,18 @@ clean: ## Remove build and cache artifacts
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage coverage.xml dist build
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
+api: ## Run the API locally (SQLite, inline queue, no other services)
+	$(UV) run uvicorn judgekit.api.app:app --reload --port 8000
+
+worker: ## Run an arq worker locally (needs Redis)
+	$(UV) run arq judgekit.worker.main.WorkerSettings
+
+migrate: ## Apply database migrations
+	$(UV) run alembic upgrade head
+
+migration: ## Autogenerate a migration: make migration m="add x"
+	$(UV) run alembic revision --autogenerate -m "$(m)"
+
 docker-build: ## Build all images
 	docker compose -f deploy/docker-compose.yml build
 
@@ -40,6 +52,9 @@ compose-up: ## Bring the full stack up locally
 
 compose-down: ## Tear the local stack down
 	docker compose -f deploy/docker-compose.yml down -v
+
+compose-logs: ## Follow the stack's logs
+	docker compose -f deploy/docker-compose.yml logs -f api worker
 
 k8s-up: ## Deploy to the local minikube cluster
 	kubectl apply -k deploy/k8s/overlays/local

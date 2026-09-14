@@ -17,6 +17,8 @@ import logging
 from pathlib import Path
 from typing import Any, ClassVar
 
+from arq.connections import RedisSettings
+
 from judgekit.config import get_settings
 from judgekit.observability import configure_logging, get_metrics
 from judgekit.storage.database import (
@@ -70,14 +72,30 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     log.info("worker stopped")
 
 
-def _redis_settings() -> Any:
-    from arq.connections import RedisSettings
+def _redis_settings() -> RedisSettings:
+    """Parse ``REDIS_URL`` into arq's connection settings.
 
+    Pure parsing - this opens no socket, which is what makes it safe to call
+    while the class body below is being evaluated.
+    """
     return RedisSettings.from_dsn(get_settings().redis_url)
 
 
 class WorkerSettings:
-    """arq configuration. Referenced by path on the command line."""
+    """arq configuration. Referenced by path on the command line.
+
+    Every value here must be a **plain class attribute**. ``arq`` collects its
+    configuration with ``settings_cls.__dict__``, not ``getattr``, so anything
+    behind a descriptor - a ``staticmethod``, a ``classmethod``, a ``property``,
+    or a ``property`` on a metaclass - is handed to the worker as the descriptor
+    object itself rather than the value it would return.
+
+    That failure is silent until the worker dials Redis and something deep in
+    ``arq.connections`` asks the "settings" for a ``.host`` it does not have. The
+    process then dies at startup, having consumed nothing, while the API happily
+    keeps accepting runs that queue forever. ``test_redis_settings_is_a_value``
+    pins the type so that stays fixed.
+    """
 
     functions: ClassVar[list[Any]] = [run_evaluation]
     on_startup = startup
@@ -93,6 +111,7 @@ class WorkerSettings:
     keep_result = 3600
     max_tries = 2
 
-    @staticmethod
-    def redis_settings() -> Any:  # pragma: no cover - needs a live Redis
-        return _redis_settings()
+    # Evaluated once, when this module is imported - which for the worker is
+    # process start, after the environment is set. It cannot be deferred: see
+    # the class docstring.
+    redis_settings = _redis_settings()

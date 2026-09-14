@@ -17,8 +17,16 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
+# HOSTNAME is not cosmetic here. Next's standalone server.js binds to
+# process.env.HOSTNAME, and Docker sets that to the container id - so without
+# this the server listens on the container's own IP alone. Published ports
+# still work, because docker-proxy forwards to that IP, which is exactly what
+# makes the fault easy to miss: the site loads fine from the host while every
+# localhost connection inside the container is refused, and the health check
+# can never pass.
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
+    HOSTNAME=0.0.0.0 \
     PORT=3000
 
 RUN addgroup --system --gid 1001 nodejs \

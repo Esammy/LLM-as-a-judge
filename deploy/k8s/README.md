@@ -67,7 +67,26 @@ than a silent fallback to empty credentials.
 
 ## Status
 
-The manifests render and validate cleanly (`kubectl kustomize`, `kubectl apply
---dry-run=client`). The container build and a live cluster deploy have **not**
-been run in this environment - it has no Docker daemon, which minikube's
-default driver needs. `demo.sh` is the single command to verify both.
+Deployed and exercised on minikube (Kubernetes v1.35.1, Docker driver, 4 CPUs),
+not merely rendered. From a cold `kubectl delete namespace judgekit`:
+
+| | |
+| --- | --- |
+| `apply -k overlays/local` | 18 objects, no deprecation warnings |
+| migration Job | completes on the first attempt |
+| API / worker / Postgres / Redis | all Ready, zero restarts |
+| 630 runs submitted | all `completed` |
+| HPA under backlog | CPU 204% of request, replicas 1 -> 4 -> 6 |
+| after the queue drained | CPU 7%, pool held at 6 for the 300s window |
+
+Three things that deploy found, all fixed:
+
+- the migration Job raced Postgres on a cold cluster and burned three of its
+  four attempts on DNS failures - it now waits on an init container
+- the worker crash-looped once against a not-yet-ready Redis, which Kubernetes
+  recovered on its own; the init container above incidentally removed that too
+- `demo.sh` submitted 30 runs, about six seconds of work, which drained before
+  the HPA sampled it at all - the autoscaler looked broken when the load was
+  simply too small to be a backlog
+
+`demo.sh` reproduces the whole sequence in one command.

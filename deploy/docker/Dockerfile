@@ -3,7 +3,7 @@
 # twice and a rebuild of one does not invalidate the other.
 
 # ---------- builder ----------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /bin/uv
 
@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 
 # ---------- runtime base ----------
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # Non-root, with no login shell and no home directory to write into. The
 # Kubernetes manifests also mount the root filesystem read-only, so anything

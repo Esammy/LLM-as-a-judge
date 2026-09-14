@@ -1,7 +1,7 @@
 # Contributing
 
 ```bash
-uv sync --all-extras
+uv sync --extra dev
 uv run pre-commit install
 make check          # ruff, mypy --strict, pytest, coverage gate
 .\make.ps1 check    # same, on Windows

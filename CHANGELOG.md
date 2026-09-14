@@ -59,6 +59,15 @@ stack runs; this proved the tool is *correct* when the judge is a real model.
   contains the literal word. The built-in judge prompt happens to, so this only
   broke for callers passing prompts of their own. The adapter now satisfies its
   own precondition.
+- **`uv sync --extra dev` could not run the test suite.** The `dev` extra pulled
+  in `aiosqlite` and `asgi-lifespan` - which exist only to test the service
+  layer - while omitting FastAPI, SQLAlchemy and arq themselves, so `pytest`
+  stopped at collection with two `ModuleNotFoundError`s. Every CI workflow runs
+  exactly that command, so CI would have failed on the first push. `dev` now
+  includes the `service` extra.
+- **Nothing told you to install uv.** The first line of the Quickstart assumed
+  it. Added the install command and a plain-pip alternative, both verified from
+  an empty virtualenv.
 - **The live provider tests capped `max_tokens` at 64.** Current judge models
   reason before answering - `openai/gpt-oss-120b` spends about 220 tokens
   reaching a twelve-character reply - so the response was truncated mid-object

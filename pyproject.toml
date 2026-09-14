@@ -54,6 +54,13 @@ service = [
     "prometheus-client>=0.21",
 ]
 dev = [
+    # The suite covers the API and the worker, so the service extra is part of
+    # a development install rather than something to remember separately.
+    # Without this `uv sync --extra dev` installs aiosqlite and asgi-lifespan -
+    # which exist only to test the service layer - while omitting FastAPI and
+    # SQLAlchemy themselves, and pytest fails at collection. Every CI workflow
+    # runs exactly that command.
+    "judgekit[service]",
     "pytest>=8.3",
     # SQLAlchemy lets the suite run against in-memory SQLite while production
     # uses Postgres, so storage is covered without a database in CI.

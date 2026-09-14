@@ -7,7 +7,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
 > **Status: v0.1.0.** Library, CLI, providers, service, Kubernetes manifests and
-> dashboard are all implemented. 436 tests, no API key and no network required.
+> dashboard are all implemented. 441 tests, no API key and no network required.
 
 ---
 
@@ -47,9 +47,22 @@ April, so calibration is a recurring job rather than a one-off.
 ## Quickstart
 
 ```bash
+# uv is the toolchain; install it first if you have not got it
+#   macOS / Linux:  curl -LsSf https://astral.sh/uv/install.sh | sh
+#   Windows:        powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
 # no API key needed - the default provider is deterministic
 uv sync --extra dev
-uv run pytest          # 436 tests, offline, in about ten seconds
+uv run pytest          # 441 tests, offline, in about twenty seconds
+```
+
+Without uv, plain pip does the same job:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+pytest
 ```
 
 Judge a dataset from Python today:
@@ -431,7 +444,7 @@ worker pool scales horizontally.
 ## Development
 
 ```bash
-uv sync --all-extras
+uv sync --extra dev
 make check          # lint, typecheck, tests, coverage gate
 .\make.ps1 check    # same, on Windows
 ```

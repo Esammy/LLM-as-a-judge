@@ -54,6 +54,16 @@ stack runs; this proved the tool is *correct* when the judge is a real model.
 - **Errors were counted but never explained.** The terminal said "8 errored"
   while the reason - already present in the JSON, the HTML report and the
   dashboard - was the one thing missing from the first view anyone sees.
+- **The Groq adapter 400d on prompts that did not say "json".** It always asks
+  for `response_format: json_object`, and the API refuses that unless a message
+  contains the literal word. The built-in judge prompt happens to, so this only
+  broke for callers passing prompts of their own. The adapter now satisfies its
+  own precondition.
+- **The live provider tests capped `max_tokens` at 64.** Current judge models
+  reason before answering - `openai/gpt-oss-120b` spends about 220 tokens
+  reaching a twelve-character reply - so the response was truncated mid-object
+  and rejected as malformed JSON, which reads like an adapter bug rather than a
+  budget one.
 
 **From the first deploy to real Docker and a live minikube.** Every one of
 these was invisible to a green test suite.

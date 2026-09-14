@@ -63,7 +63,7 @@ dev = [
     # tz database on Windows. Without this, `alembic revision` fails there
     # with "Can't locate timezone: UTC" - a papercut for any contributor
     # not on Linux.
-    "tzdata>=2024.2; sys_platform == 'win32'",
+    "tzdata>=2026.3; sys_platform == 'win32'",
     "pytest-asyncio>=0.25",
     "pytest-cov>=6.0",
     "ruff>=0.9",

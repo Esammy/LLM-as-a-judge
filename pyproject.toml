@@ -50,7 +50,7 @@ service = [
     "sqlalchemy>=2.0",
     "alembic>=1.14",
     "asyncpg>=0.30",
-    "arq>=0.26",
+    "arq>=0.28.0",
     "prometheus-client>=0.21",
 ]
 dev = [

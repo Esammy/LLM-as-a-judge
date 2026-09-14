@@ -15,6 +15,30 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      # Wait for Postgres to accept connections before spending an attempt on
+      # it. Without this the Job races the database on a cold cluster: each
+      # attempt dies on DNS or a refused connection, and with backoffLimit 3 a
+      # database that is merely slow to start makes the migration fail
+      # permanently - taking the whole deploy with it, since the API and worker
+      # wait on this Job. Observed on a cold minikube: attempts 1 and 2 both
+      # died in name resolution and only the third succeeded.
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:17-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -p 5432 -U judgekit; do
+                echo "waiting for postgres"; sleep 2
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001

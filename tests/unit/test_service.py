@@ -583,3 +583,37 @@ class TestWorkerEntrypoint:
 
         assert WorkerSettings.max_jobs == 1
         assert WorkerSettings.functions[0].__name__ == "run_evaluation"
+
+    def test_redis_settings_is_a_value_not_a_descriptor(self) -> None:
+        """arq reads ``__dict__``, so a staticmethod here is never called.
+
+        This shipped broken once: ``redis_settings`` was a ``@staticmethod``,
+        which arq passed through verbatim, and the worker died at startup on
+        ``'staticmethod' object has no attribute 'host'``. Nothing caught it,
+        because the API kept accepting runs - they simply queued forever with
+        no consumer. Asserting the *value* rather than the callable is the
+        whole point of this test.
+        """
+        from arq.connections import RedisSettings
+
+        from judgekit.worker.main import WorkerSettings
+
+        assert isinstance(WorkerSettings.__dict__["redis_settings"], RedisSettings)
+
+    def test_every_worker_setting_reaches_arq(self) -> None:
+        """A name arq's ``Worker`` does not accept is silently discarded.
+
+        ``get_kwargs`` keeps only the keys matching ``Worker``'s signature, so a
+        typo or a renamed upstream parameter drops the setting without warning -
+        ``max_jobs`` quietly reverting to arq's default of 10 would multiply
+        concurrency against the provider's rate limit.
+        """
+        import inspect
+
+        from arq.worker import Worker
+
+        from judgekit.worker.main import WorkerSettings
+
+        accepted = set(inspect.signature(Worker).parameters)
+        declared = {k for k in WorkerSettings.__dict__ if not k.startswith("_")}
+        assert declared <= accepted, f"ignored by arq: {sorted(declared - accepted)}"

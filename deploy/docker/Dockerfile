@@ -20,8 +20,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --extra service
 
 COPY src/ ./src/
+
+# --reinstall-package is load-bearing, not belt-and-braces. The uv cache mount
+# above survives between builds, and uv resolves the local project by name and
+# version: while this stays judgekit==0.1.0 it will happily install the wheel it
+# built the first time and skip the source entirely, printing "Installed 1
+# package" with no "Prepared". The COPY above busts its layer, the image is
+# rebuilt, every test passes - and the running container holds code from an
+# earlier commit. Forcing the reinstall makes uv rebuild the wheel from what
+# was actually copied.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-editable --extra service
+    uv sync --frozen --no-editable --extra service --reinstall-package judgekit
 
 
 # ---------- runtime base ----------

@@ -306,9 +306,13 @@ calibration CronJob - because judges drift, so calibration is recurring work.
 
 Details and the reasoning: [deploy/k8s/README.md](deploy/k8s/README.md).
 
-> **Verification status.** The manifests render and validate cleanly. The
-> container build and a live cluster deploy have not been run in the environment
-> this was written in, which has no Docker daemon. `demo.sh` verifies both.
+> **Verification status.** Both images build, `docker compose up` brings the
+> stack up and runs an eval end to end, and the local overlay has been deployed
+> to a live minikube: a cold `apply -k` reaches a running API, worker, Postgres
+> and Redis with a completed migration Job, 630 queued runs drain through the
+> worker pool, and the HPA scales it 1 -> 4 -> 6 under the backlog before holding
+> at 6 through the scale-down stabilisation window. `deploy/k8s/demo.sh`
+> reproduces all of it in one command.
 
 ## Dashboard
 

@@ -1,0 +1,24 @@
+# This file must live at the build-context root, which for the API and
+# worker images is the repository root - see deploy/docker-compose.yml.
+# It previously sat next to the Dockerfile in deploy/docker/, where neither
+# builder reads it: BuildKit looks for <context>/.dockerignore or
+# <dockerfile>.dockerignore, and deploy/docker/.dockerignore is neither. The
+# whole file was dead, and every build shipped 699MB of context including
+# .venv/ and .git/.
+.venv/
+.git/
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+tests/
+docs/
+dashboard/
+deploy/k8s/
+*.db
+.env
+reports/
+htmlcov/
+coverage.xml

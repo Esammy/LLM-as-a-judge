@@ -32,8 +32,31 @@ All notable changes are recorded here. Format follows
 
 ### Fixed
 
-First deploy to real Docker and a live minikube. Every one of these was
-invisible to a green test suite.
+**From the first run against a live Groq key.** The container work proved the
+stack runs; this proved the tool is *correct* when the judge is a real model.
+
+- **Position bias had no noise floor.** The detector scored identical content in
+  each slot and attributed any difference to slot order - and the docs said so
+  explicitly. That is false for a hosted model: `groq/openai/gpt-oss-120b` at
+  temperature 0 moved 2 of 8 cases by up to 0.57 scale points across three
+  byte-identical runs, which was the *same* 2 of 8 the slot comparison was
+  reporting as positional movement. Each case is now scored a third time in the
+  first slot, and a finding must clear both the threshold and that floor.
+- **The Groq default model was retired.** `llama-3.3-70b-versatile` 404s. With
+  no way to override it, `--provider groq` was unusable out of the box.
+- **A run could not choose its judge model.** No flag, no environment variable -
+  which also made it impossible to compare two judges, the thing this tool
+  exists to do. Added `--model` / `-m` and `$JUDGEKIT_MODEL`.
+- **A run where every case errored exited 0.** A retired model id or a rejected
+  key produced eight `error` verdicts and a success exit code, so it would have
+  sailed through CI as a green run. Nothing measured is not the same as nothing
+  wrong - the same distinction the bias detectors already drew.
+- **Errors were counted but never explained.** The terminal said "8 errored"
+  while the reason - already present in the JSON, the HTML report and the
+  dashboard - was the one thing missing from the first view anyone sees.
+
+**From the first deploy to real Docker and a live minikube.** Every one of
+these was invisible to a green test suite.
 
 - **The arq worker never started.** `WorkerSettings.redis_settings` was a
   `@staticmethod`, and arq reads its configuration from `settings_cls.__dict__`

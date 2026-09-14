@@ -202,6 +202,66 @@ class TestPositionBias:
         assert finding.concerning
         assert "favouring the first slot" in finding.detail
 
+    async def test_a_deterministic_judge_has_a_zero_noise_floor(self, rubric: Rubric) -> None:
+        """The stub never moves, so the slot comparison stands on its own."""
+        judge = Judge(rubric, StubProvider())
+        cases = [case("a", "an answer", 4.0), case("b", "another answer", 3.0)]
+
+        finding = await measure_position_bias(judge, cases)
+
+        assert "Noise floor 0.00 points" in finding.detail
+        assert "moved 0 of 2 cases with nothing changed" in finding.detail
+
+    async def test_jitter_is_not_reported_as_position_bias(self, rubric: Rubric) -> None:
+        """A judge that wobbles at random must not be called slot-biased.
+
+        Hosted models are not deterministic at temperature 0 - batching and
+        expert routing move scores between byte-identical calls. Measured on
+        groq/openai/gpt-oss-120b, 2 of 8 cases drifted by up to 0.57 scale
+        points across identical runs, which was exactly the movement the slot
+        comparison had been attributing to position. This judge has no slot
+        preference whatsoever and only jitters, so the finding must not be
+        concerning however much it moves.
+        """
+        from itertools import cycle
+
+        from judgekit.providers.base import Completion
+
+        class Jittery:
+            """Returns 5, then 4, then 3 for every case, ignoring the slot.
+
+            Per case that is first=5, second=4, replicate=3: a slot delta of
+            1.0 point against a noise floor of 2.0. The delta clears the 0.15
+            threshold on its own, so without the replicate this judge would be
+            reported as position-biased - which it provably is not, since it
+            never reads the slot marker at all.
+            """
+
+            name = "jittery"
+            model = "jittery-v1"
+            family = "jittery"
+
+            def __init__(self) -> None:
+                self._scores = cycle((5, 4, 3))
+
+            async def complete(self, request: object) -> Completion:
+                score = next(self._scores)
+                return Completion(text=f'{{"score": {score}, "reasoning": "r"}}', model=self.model)
+
+        finding = await measure_position_bias(
+            Judge(rubric, Jittery()),
+            [case("a", "an answer", 4.0), case("b", "another answer", 3.0)],
+        )
+
+        assert finding.n == 2
+        # The raw slot delta is well past the threshold that would flag it.
+        assert finding.magnitude == pytest.approx(1.0)
+        assert abs(finding.magnitude) > 0.15
+        # But it is half the judge's own variance, so it is not a finding.
+        assert not finding.concerning, finding.detail
+        assert "Noise floor 2.00 points" in finding.detail
+        assert "within the judge's own variance" in finding.detail
+
     async def test_no_cases_reports_insufficient(self, rubric: Rubric) -> None:
         finding = await measure_position_bias(Judge(rubric, StubProvider()), [])
         assert finding.n == 0

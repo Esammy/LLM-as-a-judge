@@ -24,6 +24,12 @@ from judgekit.providers.base import Completion, CompletionRequest, Usage
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 ENV_VAR = "GEMINI_API_KEY"
+# Hosted model ids are not stable. The Groq default in this package was
+# llama-3.3-70b-versatile until it was withdrawn, which surfaces as a 404 that
+# reads like a broken install rather than a retired model. This one has NOT been
+# checked against a live key; list what yours can reach with
+#   curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"
+# and pass --model to override without editing this file.
 DEFAULT_MODEL = "gemini-2.0-flash"
 
 # Free tier is roughly 15 requests per minute. Defaulting under it means a new

@@ -248,20 +248,26 @@ async def measure_position_bias(
     deltas: list[float] = []
     unreadable = 0
 
+    noise: list[float] = []
+
     for case in cases:
         base = judge.build_prompt(case)
         scores: list[float | None] = []
-        for marker in (SLOT_FIRST, SLOT_SECOND):
+        # The third call repeats the first slot verbatim. Its only job is to
+        # say how much this judge moves when nothing has changed.
+        for marker in (SLOT_FIRST, SLOT_SECOND, SLOT_FIRST):
             completion = await judge.provider.complete(
                 CompletionRequest(prompt=f"{base}\n\n{marker}", temperature=0.0)
             )
             scores.append(_score_from(completion.text, scale))
 
-        first, second = scores
+        first, second, replicate = scores
         if first is None or second is None:
             unreadable += 1
             continue
         deltas.append(first - second)
+        if replicate is not None:
+            noise.append(abs(first - replicate))
 
     if not deltas:
         return _insufficient(
@@ -274,6 +280,7 @@ async def measure_position_bias(
     mean_delta = float(np.mean(deltas))
     moved = sum(1 for d in deltas if abs(d) > 1e-9)
     favoured = "first" if mean_delta > 0 else "second"
+    noise_floor = float(np.mean(noise)) if noise else 0.0
 
     detail = (
         f"the same answer scored {mean_delta:+.2f} points differently between "
@@ -284,11 +291,22 @@ async def measure_position_bias(
     if unreadable:
         detail += f" ({unreadable} case(s) unreadable)"
 
+    if noise:
+        unstable = sum(1 for d in noise if d > 1e-9)
+        detail += (
+            f". Noise floor {noise_floor:.2f} points: re-scoring the same slot "
+            f"moved {unstable} of {len(noise)} cases with nothing changed"
+        )
+        if abs(mean_delta) <= noise_floor:
+            detail += ", so this slot difference is within the judge's own variance"
+
     return BiasFinding(
         kind="position",
         magnitude=mean_delta,
         unit="scale points",
         n=len(deltas),
         detail=detail,
-        concerning=abs(mean_delta) > threshold,
+        # Both tests must fail it. A slot difference smaller than what the judge
+        # does to itself on an unchanged prompt is noise being read as bias.
+        concerning=abs(mean_delta) > threshold and abs(mean_delta) > noise_floor,
     )

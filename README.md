@@ -108,6 +108,10 @@ $ echo $?
 This is the part nothing else ships. Give it cases carrying `human_label` and
 it tells you whether your judge can be trusted at all:
 
+With no `-p`, the judge here is the offline stub - a lexical heuristic, not a
+model - so these numbers describe *it*, not any LLM. [A live
+judge](#on-a-real-judge) is a few lines down.
+
 ```bash
 $ judgekit calibrate datasets/example.jsonl -r rubrics/answer-quality.v2.yaml
 
@@ -181,12 +185,49 @@ construction:
 | position | +0.000, 0/8 moved | **+0.922 pts, 8/8 moved, first slot** |
 | verbosity | -0.038 | **+0.563 correlation** |
 
+### On a real judge
+
+The table above uses the stub, because that is what can be validated against a
+known answer. Pointed at a live model the same commands found something real -
+`groq/openai/gpt-oss-120b`, the 8-case example set, 8 human labels:
+
+```
+quadratic kappa     0.823  almost perfect
+spearman            0.936  does it rank cases the way humans do?
+systematic offset   +0.62  positive means generous
+```
+
+It ranks almost exactly as the reviewers do while sitting two thirds of a point
+high - which is a threshold to move, not a rubric to rewrite, and the tool says
+so in those words. Bias on the same run:
+
+```
+ok position  +0.031 pts - 3 of 8 cases moved, but the noise floor is 0.06:
+                          re-scoring the same slot moved 2 of 8 with nothing
+                          changed, so this is within the judge's own variance
+!  verbosity +0.822 correlation - about 2.6 points per 1000 characters
+```
+
+That verbosity number is the published effect reproduced on a current model, and
+it is the reason `--fail-on-bias` exits 1 here. The position number is the more
+interesting one: **a hosted model at temperature 0 is not deterministic**, and
+without the noise floor its own jitter would have been reported as slot
+preference.
+
 ## Providers
 
 ```bash
 judgekit run datasets/example.jsonl -r rubrics/answer-quality.v2.yaml   # stub, offline
 GEMINI_API_KEY=... judgekit run ... -p gemini
-GROQ_API_KEY=...   judgekit run ... -p groq
+GROQ_API_KEY=...   judgekit run ... -p groq -m openai/gpt-oss-120b
+```
+
+`--model` / `$JUDGEKIT_MODEL` picks the judge; each provider has a default.
+Those defaults rot - hosted ids get retired, and the symptom is a 404 that reads
+like a broken install - so list what your key can actually reach:
+
+```bash
+curl -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models
 ```
 
 **No provider SDKs.** Each of these APIs is a single HTTP POST and `httpx` is

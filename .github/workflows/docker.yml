@@ -43,7 +43,7 @@ jobs:
         # Only on pushes: a pull request from a fork has no write token, and the
         # build is still worth running to prove the image compiles.
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

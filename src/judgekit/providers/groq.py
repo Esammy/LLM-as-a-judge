@@ -36,6 +36,11 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 # Groq's free tier is generous on requests and tight on tokens per minute.
 DEFAULT_RPM = 25
 
+# See _payload: the API requires this word to be present before it will honour
+# a json_object response format.
+JSON_WORD = "json"
+JSON_NUDGE = "Respond with a single JSON object."
+
 PRICING: dict[str, Pricing] = {
     "llama-3.3-70b-versatile": Pricing(input_per_mtok=0.59, output_per_mtok=0.79),
     "llama-3.1-8b-instant": Pricing(input_per_mtok=0.05, output_per_mtok=0.08),
@@ -102,6 +107,17 @@ class GroqProvider:
         if request.system:
             messages.append({"role": "system", "content": request.system})
         messages.append({"role": "user", "content": request.prompt})
+
+        # Groq rejects response_format=json_object outright unless the literal
+        # word "json" appears somewhere in the messages:
+        #   400 'messages' must contain the word 'json' in some form
+        # The judge prompt happens to say it, so this never fired in normal use
+        # and only surfaced when a caller passed a prompt of their own. Since
+        # the adapter is what asks for JSON, the adapter is what has to satisfy
+        # the precondition - rather than leaving a provider that 400s on some
+        # prompts and not others depending on their wording.
+        if not any(JSON_WORD in m["content"].lower() for m in messages):
+            messages.insert(0, {"role": "system", "content": JSON_NUDGE})
 
         payload: dict[str, Any] = {
             "model": self._model,

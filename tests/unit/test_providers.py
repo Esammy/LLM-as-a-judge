@@ -329,7 +329,10 @@ class TestGroq:
             await GroqProvider(api_key="secret", client=client).complete(REQUEST)
 
         payload = seen["payload"]
-        assert payload["messages"] == [
+        # The caller's own messages are passed through untouched and in order,
+        # after the JSON precondition message - see
+        # test_adds_the_json_precondition_only_when_needed.
+        assert payload["messages"][-2:] == [
             {"role": "system", "content": "you are a judge"},
             {"role": "user", "content": "grade this"},
         ]
@@ -345,9 +348,42 @@ class TestGroq:
             return httpx.Response(200, json=groq_body())
 
         async with transport(handler) as client:
-            await GroqProvider(api_key="k", client=client).complete(CompletionRequest(prompt="x"))
+            await GroqProvider(api_key="k", client=client).complete(
+                CompletionRequest(prompt="return json")
+            )
 
         assert [m["role"] for m in seen["payload"]["messages"]] == ["user"]
+
+    async def test_adds_the_json_precondition_only_when_needed(self) -> None:
+        """Groq 400s on response_format=json_object unless a message says "json".
+
+        The adapter is what asks for a JSON response, so the adapter has to
+        satisfy the precondition. Leaving it to the caller produced a provider
+        that worked for the built-in judge prompt - which happens to say JSON -
+        and returned 400 for anyone passing a prompt of their own.
+        """
+        seen: list[list[dict[str, str]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(__import__("json").loads(request.content)["messages"])
+            return httpx.Response(200, json=groq_body())
+
+        async with transport(handler) as client:
+            provider = GroqProvider(api_key="k", client=client)
+            await provider.complete(CompletionRequest(prompt="grade this"))
+            await provider.complete(CompletionRequest(prompt="reply as JSON please"))
+            await provider.complete(CompletionRequest(prompt="grade this", system="answer in json"))
+
+        without, in_prompt, in_system = seen
+
+        # Nothing mentions JSON, so one is prepended.
+        assert without[0]["role"] == "system"
+        assert "json" in without[0]["content"].lower()
+        assert without[-1] == {"role": "user", "content": "grade this"}
+
+        # Already satisfied, in either message: left exactly as the caller sent it.
+        assert [m["role"] for m in in_prompt] == ["user"]
+        assert [m["role"] for m in in_system] == ["system", "user"]
 
     async def test_forwards_a_seed_when_given(self) -> None:
         seen: dict[str, Any] = {}
@@ -461,7 +497,16 @@ class TestRegistry:
 
 @pytest.mark.live
 class TestLiveProviders:
-    """Only run when a real key is present. Skipped by default, including in CI."""
+    """Only run when a real key is present. Skipped by default, including in CI.
+
+    These deliberately do not cap ``max_tokens``. Current judge models reason
+    before they answer - openai/gpt-oss-120b spends about 220 tokens getting to
+    a twelve-character reply - so a tight budget truncates the response
+    mid-object and the provider rejects it as malformed JSON rather than
+    reporting a length problem. An earlier version of these tests passed 64 and
+    failed against every reasoning model for reasons that looked like a bug in
+    the adapter.
+    """
 
     async def test_gemini_returns_a_judgement(self) -> None:
         if not os.environ.get("GEMINI_API_KEY"):
@@ -472,7 +517,6 @@ class TestLiveProviders:
             completion = await provider.complete(
                 CompletionRequest(
                     prompt='Return exactly {"score": 4} and nothing else.',
-                    max_tokens=64,
                 )
             )
         finally:
@@ -490,7 +534,6 @@ class TestLiveProviders:
             completion = await provider.complete(
                 CompletionRequest(
                     prompt='Return exactly {"score": 4} and nothing else.',
-                    max_tokens=64,
                 )
             )
         finally:

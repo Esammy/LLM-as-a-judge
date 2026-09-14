@@ -1,6 +1,13 @@
 # The full stack locally: Postgres, Redis, the API and a worker pool.
 #
 #   docker compose -f deploy/docker-compose.yml up --build
+#
+# Compose looks for `.env` next to THIS file, not at the repository root, so a
+# root .env is silently ignored and the stack quietly comes up on the stub
+# rather than the provider you configured. Point it at the root file
+# explicitly, from the repository root:
+#
+#   docker compose -f deploy/docker-compose.yml --env-file .env up --build
 #   curl -X POST localhost:8000/runs \
 #        -d '{"dataset":"example.jsonl","rubric":"answer-quality.v2.yaml"}' \
 #        -H 'content-type: application/json'

@@ -271,7 +271,10 @@ horizontally.
 make api
 
 # The full stack: Postgres, Redis, API and a worker pool.
-docker compose -f deploy/docker-compose.yml up --build
+# --env-file is not optional if you keep a root .env: compose looks for one
+# next to the compose file, so a root .env is ignored and the stack comes up
+# on the stub rather than the provider you configured.
+docker compose -f deploy/docker-compose.yml --env-file .env up --build
 
 curl -X POST localhost:8000/runs -H 'content-type: application/json'      -d '{"dataset":"example.jsonl","rubric":"answer-quality.v2.yaml"}'
 # {"run_id":"01cbbc57d33e","status":"queued"}

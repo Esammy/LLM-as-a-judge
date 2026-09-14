@@ -57,17 +57,33 @@ Judges prefer whichever answer came first. In a pairwise comparison that alone
 can decide the result.
 
 judgekit measures it by scoring **identical content twice**, once presented as
-the first candidate and once as the second. The content, rubric, evidence and
-temperature are all held constant, so any difference in score is attributable to
-slot order and nothing else.
+the first candidate and once as the second, with content, rubric, evidence and
+temperature all held constant.
 
-The magnitude is reported in scale points:
+That is not sufficient on its own, and an earlier version of this page claimed
+it was. **A hosted model at temperature 0 is not deterministic.** Batching and
+expert routing move scores between byte-identical calls. Measured here on
+`groq/openai/gpt-oss-120b`, 2 of 8 cases drifted by up to 0.57 scale points
+across three identical runs - and that was the same 2 of 8 the slot comparison
+was reporting as positional movement. A detector with no noise floor cannot tell
+those apart, and will confidently report sampling variance as bias.
+
+So each case is scored a **third** time, in the first slot again. That gives the
+judge's own run-to-run variance on an unchanged prompt, and a finding is only
+flagged when it clears both the threshold and that floor:
 
 ```
-ok position +0.000 scale points (n=8)
-   the same answer scored +0.00 points differently between slots;
-   0 of 8 cases moved at all
+ok position +0.031 scale points (n=8)
+   the same answer scored +0.03 points differently between slots; 3 of 8
+   cases moved at all, favouring the first slot. Noise floor 0.06 points:
+   re-scoring the same slot moved 2 of 8 cases with nothing changed, so this
+   slot difference is within the judge's own variance
 ```
+
+Three of eight cases moved between slots, which looks like a finding until you
+see that two of eight move when nothing changes at all. Against the
+deterministic stub the floor is 0.00 and the slot comparison stands on its own -
+which is why the stub is what the detectors are validated against.
 
 ### 3. Verbosity bias
 

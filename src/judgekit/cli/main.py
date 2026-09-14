@@ -18,6 +18,7 @@ default provider is the deterministic stub.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Annotated, Any, TypeVar
@@ -81,12 +82,29 @@ ProviderOpt = Annotated[
         ),
     ),
 ]
+ModelOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--model",
+        "-m",
+        help=(
+            "Judge model id. Defaults to $JUDGEKIT_MODEL, then to the provider's "
+            "own default. Ignored by the stub, which has no model to choose."
+        ),
+    ),
+]
 
 
-def _provider(name: str | None) -> Provider:
-    """Resolve a provider, turning a missing key into a gate failure."""
+def _provider(name: str | None, model: str | None = None) -> Provider:
+    """Resolve a provider, turning a missing key into a gate failure.
+
+    The model is threaded through rather than left to each provider's hardcoded
+    default because comparing two judges is the point of this tool, and a
+    hosted model id is not a stable thing to hardcode - providers retire them.
+    """
+    chosen = model or os.environ.get("JUDGEKIT_MODEL") or None
     try:
-        return create_provider(name)
+        return create_provider(name, **({"model": chosen} if chosen else {}))
     except JudgekitError as exc:
         _fail(str(exc))
         raise
@@ -96,6 +114,7 @@ def _with_judge(
     rubric: Rubric,
     provider_name: str | None,
     work: Callable[[Judge], Coroutine[Any, Any, T]],
+    model: str | None = None,
 ) -> T:
     """Build a judge, run one coroutine with it, and always release the provider.
 
@@ -103,7 +122,7 @@ def _with_judge(
     harmless in a short-lived CLI process and sloppy everywhere else, so the
     lifecycle lives in one place rather than at each call site.
     """
-    judge = Judge(rubric, _provider(provider_name))
+    judge = Judge(rubric, _provider(provider_name, model))
 
     async def go() -> T:
         try:
@@ -152,6 +171,17 @@ def _print_summary(result: RunResult, dataset: Dataset) -> None:
         f"({result.passed}/{result.total}), mean {result.mean_score:.2f}"
         + (f", [yellow]{result.errored} errored[/yellow]" if result.errored else "")
     )
+
+    # One line saying WHY, not just how many. The reason reaches the JSON, the
+    # HTML report and the dashboard already; leaving it out of the terminal
+    # meant the first thing anyone runs was also the one view that could not
+    # tell them their model id was retired or their key was rejected.
+    if result.errored:
+        reasons = {j.error for j in result.judgements if j.error}
+        for reason in sorted(reasons)[:3]:
+            console.print(f"[yellow]  {escape(reason.strip().splitlines()[0][:160])}[/yellow]")
+        if len(reasons) > 3:
+            console.print(f"[dim]  ... and {len(reasons) - 3} other error(s)[/dim]")
     # Always printed, never optional: a score without its rubric is not a
     # measurement, and the fingerprint is what makes two runs comparable.
     console.print(
@@ -178,6 +208,7 @@ def run(
     ] = None,
     domain: Annotated[str | None, typer.Option(help="Only run cases in this domain.")] = None,
     provider: ProviderOpt = None,
+    model: ModelOpt = None,
 ) -> None:
     """Judge a dataset and report the results."""
     try:
@@ -194,7 +225,10 @@ def run(
             return
 
     result = _with_judge(
-        rubric, provider, lambda judge: Runner(judge, concurrency=concurrency).run(dataset)
+        rubric,
+        provider,
+        lambda judge: Runner(judge, concurrency=concurrency).run(dataset),
+        model=model,
     )
 
     _print_summary(result, dataset)
@@ -209,6 +243,18 @@ def run(
     if save:
         save.write_text(render_json(result), encoding="utf-8")
         console.print(f"[dim]run saved to {save}[/dim]")
+
+    # Every case failing to produce a judgement is an infrastructure failure,
+    # not a quality result, and exiting 0 on it would let a retired model id or
+    # a rejected key sail through CI looking like a green run. This is the same
+    # distinction the bias detectors draw between "measured as zero" and "not
+    # measured" - collapsing the two is how a tool launders ignorance into
+    # reassurance.
+    if result.total and result.errored == result.total:
+        _fail(
+            f"every case errored ({result.errored}/{result.total}); "
+            "nothing was measured. See the errors above."
+        )
 
     if min_pass_rate is not None and result.pass_rate < min_pass_rate:
         _fail(f"pass rate {result.pass_rate:.1%} is below the required {min_pass_rate:.1%}")
@@ -398,6 +444,7 @@ def calibrate(
     ] = None,
     concurrency: Annotated[int, typer.Option(help="Cases in flight at once.")] = 8,
     provider: ProviderOpt = None,
+    model: ModelOpt = None,
 ) -> None:
     """Measure the judge against the dataset's human labels.
 
@@ -419,7 +466,10 @@ def calibrate(
         return
 
     result = _with_judge(
-        rubric, provider, lambda judge: Runner(judge, concurrency=concurrency).run(dataset)
+        rubric,
+        provider,
+        lambda judge: Runner(judge, concurrency=concurrency).run(dataset),
+        model=model,
     )
 
     try:
@@ -485,6 +535,7 @@ def bias(
         bool, typer.Option("--fail-on-bias", help="Exit 1 if any bias exceeds the threshold.")
     ] = False,
     provider: ProviderOpt = None,
+    model: ModelOpt = None,
 ) -> None:
     """Measure position, verbosity and self-preference bias in the judge."""
     try:
@@ -509,7 +560,7 @@ def bias(
             ),
         ]
 
-    findings = _with_judge(rubric, provider, measure)
+    findings = _with_judge(rubric, provider, measure, model=model)
 
     for finding in findings:
         colour = "red" if finding.concerning else "green"

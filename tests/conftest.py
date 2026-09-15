@@ -7,9 +7,18 @@ key - and a fixture is exactly where that promise would quietly break.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+# Set before judgekit is imported, and before any test module runs: the CLI
+# loads ./.env on every invocation, so without this a checkout that has one -
+# every developer's, and the .env.example invites it - would hand the suite a
+# real provider and a real key. The tests would then reach the network, spend
+# money, and take minutes instead of seconds, while the README promised they
+# did none of that. CI would not have caught it: there is no .env there to find.
+os.environ.setdefault("JUDGEKIT_DISABLE_ENV_FILE", "1")
 
 from judgekit.core.models import Case, Dataset, Evidence, ToolCall
 from judgekit.core.rubric import Criterion, Rubric, Scale

@@ -8,8 +8,10 @@ than no gate at all.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -219,6 +221,59 @@ class TestCompare:
         bad.write_text("{not json", encoding="utf-8")
         result = runner.invoke(app, ["compare", str(bad), str(bad)])
         assert result.exit_code == 1
+
+
+class TestModelSelection:
+    """--model, $JUDGEKIT_MODEL, and the stub's fixed identity."""
+
+    def test_the_stub_never_reports_a_model_it_did_not_use(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        """`-p stub` with JUDGEKIT_MODEL set used to print stub/<that model>.
+
+        The stub takes a model name so bias tests can pose as different
+        families, so it accepted the environment's value and reported it. The
+        summary line then read `stub/openai/gpt-oss-120b`, and that model would
+        have been written onto the stored run - a provenance record naming a
+        judge that produced none of the scores, in a tool whose whole argument
+        is that provenance travels with the score.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("JUDGEKIT_MODEL", "openai/gpt-oss-120b")
+
+        result = runner.invoke(
+            app,
+            ["run", str(DATASET), "-r", str(RUBRIC_DIR / "answer-quality.v2.yaml"), "-p", "stub"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "stub-judge-v1" in result.output
+        assert "gpt-oss-120b" not in result.output
+
+    def test_an_env_file_configures_a_run(self, monkeypatch: Any, tmp_path: Any) -> None:
+        """A .env in the working directory is read before the provider resolves.
+
+        Nothing read .env at all until this was added, so a file saying
+        JUDGEKIT_PROVIDER=groq sat there while every run quietly used the stub
+        and reported success.
+        """
+        monkeypatch.chdir(tmp_path)
+        # The suite disables .env loading globally (see tests/conftest.py); this
+        # is one of the few tests whose subject is that it works at all, and the
+        # file it reads is one it just wrote into tmp_path.
+        monkeypatch.delenv("JUDGEKIT_DISABLE_ENV_FILE", raising=False)
+        monkeypatch.delenv("JUDGEKIT_PROVIDER", raising=False)
+        monkeypatch.delenv("JUDGEKIT_MODEL", raising=False)
+        (tmp_path / ".env").write_text(
+            "JUDGEKIT_PROVIDER=stub      # trailing comment\n", encoding="utf-8"
+        )
+
+        result = runner.invoke(
+            app, ["run", str(DATASET), "-r", str(RUBRIC_DIR / "answer-quality.v2.yaml")]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert os.environ["JUDGEKIT_PROVIDER"] == "stub"
 
 
 class TestHelp:

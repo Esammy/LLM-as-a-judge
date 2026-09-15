@@ -53,6 +53,17 @@ def available() -> tuple[str, ...]:
     return tuple(sorted(_FACTORIES))
 
 
+def resolve_name(name: str | None = None) -> str:
+    """The provider name that :func:`create_provider` would use.
+
+    Exposed so callers can ask which provider they are about to get without
+    building one - the CLI needs it to decide whether a ``--model`` is
+    meaningful - rather than re-deriving the precedence rule and drifting from
+    it.
+    """
+    return (name or os.environ.get(ENV_VAR) or DEFAULT_PROVIDER).strip().lower()
+
+
 def create_provider(name: str | None = None, **kwargs: Any) -> Provider:
     """Build a provider by name.
 
@@ -65,7 +76,7 @@ def create_provider(name: str | None = None, **kwargs: Any) -> Provider:
         ProviderError: If the name is unknown, or the provider cannot be built
             (most often a missing API key).
     """
-    chosen = (name or os.environ.get(ENV_VAR) or DEFAULT_PROVIDER).strip().lower()
+    chosen = resolve_name(name)
 
     factory = _FACTORIES.get(chosen)
     if factory is None:

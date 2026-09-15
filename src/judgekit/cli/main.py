@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from judgekit.config import load_env_file
 from judgekit.core.bias import (
     BiasFinding,
     measure_position_bias,
@@ -48,7 +49,7 @@ from judgekit.core.rubric import (
 )
 from judgekit.core.runner import Runner, RunResult, compare
 from judgekit.providers.base import Provider
-from judgekit.providers.registry import available, close_provider, create_provider
+from judgekit.providers.registry import available, close_provider, create_provider, resolve_name
 
 app = typer.Typer(
     name="judgekit",
@@ -60,6 +61,22 @@ rubric_app = typer.Typer(
     name="rubric", help="Inspect, lock and verify rubrics.", no_args_is_help=True
 )
 app.add_typer(rubric_app)
+
+
+@app.callback()
+def _bootstrap() -> None:
+    """Load ``./.env`` before any command reads the environment.
+
+    Without this a .env file is decorative as far as the CLI is concerned: the
+    provider registry reads os.environ directly, so JUDGEKIT_PROVIDER=groq sat
+    in the file while every run quietly used the stub and reported success. A
+    key in there behaved the same way - present, ignored, and invisible.
+
+    Real environment variables take precedence, so exporting one still
+    overrides the file rather than losing to it.
+    """
+    load_env_file()
+
 
 console = Console()
 err_console = Console(stderr=True)
@@ -89,7 +106,7 @@ ModelOpt = Annotated[
         "-m",
         help=(
             "Judge model id. Defaults to $JUDGEKIT_MODEL, then to the provider's "
-            "own default. Ignored by the stub, which has no model to choose."
+            "own default. Not applied to the stub, whose identity is fixed."
         ),
     ),
 ]
@@ -103,6 +120,15 @@ def _provider(name: str | None, model: str | None = None) -> Provider:
     hosted model id is not a stable thing to hardcode - providers retire them.
     """
     chosen = model or os.environ.get("JUDGEKIT_MODEL") or None
+
+    # The stub's identity is fixed, and it reports whatever model it is handed.
+    # Forwarding one here made `-p stub` print `stub/openai/gpt-oss-120b` when
+    # JUDGEKIT_MODEL happened to be set, and would have written that model onto
+    # the stored run - a record naming a judge that produced none of its scores,
+    # in a tool whose entire argument is that provenance travels with the score.
+    if chosen and resolve_name(name) == "stub":
+        chosen = None
+
     try:
         return create_provider(name, **({"model": chosen} if chosen else {}))
     except JudgekitError as exc:

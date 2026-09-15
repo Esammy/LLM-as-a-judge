@@ -235,6 +235,20 @@ GEMINI_API_KEY=... judgekit run ... -p gemini
 GROQ_API_KEY=...   judgekit run ... -p groq -m openai/gpt-oss-120b
 ```
 
+The CLI reads `./.env` before every command, so a file like this is all the
+configuration a run needs:
+
+```ini
+JUDGEKIT_PROVIDER=groq          # stub | gemini | groq
+JUDGEKIT_MODEL=openai/gpt-oss-20b
+GROQ_API_KEY=...
+```
+
+A real environment variable beats the file, and a flag beats both, so
+`-p stub` still forces an offline run whatever the file says. The test suite
+sets `JUDGEKIT_DISABLE_ENV_FILE` so that a checkout with a .env in it cannot
+quietly hand the suite a real key.
+
 `--model` / `$JUDGEKIT_MODEL` picks the judge; each provider has a default.
 Those defaults rot - hosted ids get retired, and the symptom is a 404 that reads
 like a broken install - so list what your key can actually reach:

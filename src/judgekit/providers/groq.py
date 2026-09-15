@@ -31,7 +31,7 @@ ENV_VAR = "GROQ_API_KEY"
 # problem. This default was llama-3.3-70b-versatile until that happened to it.
 # `curl https://api.groq.com/openai/v1/models` lists what your key can reach;
 # pass --model to override without editing this file.
-DEFAULT_MODEL = "openai/gpt-oss-120b"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
 
 # Groq's free tier is generous on requests and tight on tokens per minute.
 DEFAULT_RPM = 25

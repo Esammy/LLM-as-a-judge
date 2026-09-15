@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from judgekit.config import Settings, get_settings
+from judgekit.config import Settings, get_settings, load_env_file
 from judgekit.core.errors import IncomparableScoresError
 from judgekit.core.judge import Judge
 from judgekit.core.models import Dataset
@@ -55,6 +56,121 @@ async def make_run(rubric_path: Path = V2_PATH) -> RunResult:
     dataset = Dataset.from_file(DATASET_PATH)
     rubric = Rubric.from_file(rubric_path)
     return await Runner(Judge(rubric, StubProvider())).run(dataset)
+
+
+class TestEnvFile:
+    """Parsing .env, which the CLI loads before anything reads the environment.
+
+    Hand-rolled rather than taken as a dependency, so the edge cases people
+    actually put in these files are pinned here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _allow_loading(self, monkeypatch: Any) -> None:
+        """conftest disables .env loading for the whole suite; re-enable it here.
+
+        These are the only tests that should read one, and they read a file
+        they wrote themselves in tmp_path rather than anything in the checkout.
+        """
+        monkeypatch.delenv("JUDGEKIT_DISABLE_ENV_FILE", raising=False)
+
+    def test_a_trailing_comment_is_not_part_of_the_value(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The bug that made this feature look broken the first time it ran.
+
+        `JUDGEKIT_PROVIDER=groq  # stub | gemini | groq` is what the shipped
+        .env.example invites you to write. Without stripping the comment the
+        provider name carried it along and the registry rejected the lot as an
+        unknown provider.
+        """
+        env = tmp_path / ".env"
+        env.write_text("JUDGEKIT_PROVIDER=groq          # stub | gemini | groq\n", encoding="utf-8")
+        monkeypatch.delenv("JUDGEKIT_PROVIDER", raising=False)
+
+        load_env_file(env)
+
+        assert os.environ["JUDGEKIT_PROVIDER"] == "groq"
+
+    def test_a_real_environment_variable_beats_the_file(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """Exporting a value and losing to a file is a confusing half-hour."""
+        env = tmp_path / ".env"
+        env.write_text("JUDGEKIT_PROVIDER=groq\n", encoding="utf-8")
+        monkeypatch.setenv("JUDGEKIT_PROVIDER", "stub")
+
+        applied = load_env_file(env)
+
+        assert os.environ["JUDGEKIT_PROVIDER"] == "stub"
+        assert "JUDGEKIT_PROVIDER" not in applied
+
+    def test_parses_what_people_actually_write(self, tmp_path: Any, monkeypatch: Any) -> None:
+        lines = [
+            "# a whole-line comment",
+            "",
+            "  export EXPORTED=yes",
+            "QUOTED='single quoted'",
+            'DQUOTED="double quoted"',
+            "HASH_IN_QUOTES='a#b'          # trailing comment",
+            "URL=https://example.com/x#frag",
+            "EQUALS=a=b=c",
+            "EMPTY=",
+            "   SPACED   =   padded   ",
+            "no_equals_sign_here",
+        ]
+        env = tmp_path / ".env"
+        env.write_text("\n".join(lines), encoding="utf-8")
+
+        keys = (
+            "EXPORTED",
+            "QUOTED",
+            "DQUOTED",
+            "HASH_IN_QUOTES",
+            "URL",
+            "EQUALS",
+            "EMPTY",
+            "SPACED",
+        )
+        for key in keys:
+            monkeypatch.delenv(key, raising=False)
+
+        load_env_file(env)
+
+        assert os.environ["EXPORTED"] == "yes"
+        assert os.environ["QUOTED"] == "single quoted"
+        assert os.environ["DQUOTED"] == "double quoted"
+        # Quoted, so the # belongs to the value and the comment sits outside it.
+        assert os.environ["HASH_IN_QUOTES"] == "a#b"
+        # Unquoted, but no whitespace before the #, so it is a URL fragment.
+        assert os.environ["URL"] == "https://example.com/x#frag"
+        assert os.environ["EQUALS"] == "a=b=c"
+        assert os.environ["EMPTY"] == ""
+        assert os.environ["SPACED"] == "padded"
+
+    def test_the_suite_guard_stops_it_reading_anything(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """JUDGEKIT_DISABLE_ENV_FILE is what keeps the suite hermetic.
+
+        This is not hypothetical. When .env loading was first added, running
+        pytest in a checkout containing a .env handed every CLI test the
+        developer's real provider and key: the suite reached the network, spent
+        money, and one invocation took 84 seconds instead of milliseconds -
+        while the README promised it needed no key and no network. CI would not
+        have caught it, because CI has no .env to find.
+        """
+        env = tmp_path / ".env"
+        env.write_text("JUDGEKIT_PROVIDER=groq\n", encoding="utf-8")
+        monkeypatch.setenv("JUDGEKIT_DISABLE_ENV_FILE", "1")
+        monkeypatch.delenv("JUDGEKIT_PROVIDER", raising=False)
+
+        assert load_env_file(env) == {}
+        assert "JUDGEKIT_PROVIDER" not in os.environ
+
+    def test_a_missing_file_is_not_an_error(self, tmp_path: Any) -> None:
+        """Most people never write one, and the stub needs no configuration."""
+        assert load_env_file(tmp_path / "nope.env") == {}
 
 
 class TestSettings:

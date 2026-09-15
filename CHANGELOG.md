@@ -30,6 +30,20 @@ All notable changes are recorded here. Format follows
 - **Dashboard** — Next.js run history, a fingerprint-scoped pass-rate trend and
   per-case drill-down.
 
+### Added
+
+- **The CLI reads `./.env`.** Configuration in a .env file - provider, model,
+  API keys - now applies to every command. A real environment variable still
+  beats the file and a flag beats both, so nothing that used to work changes.
+  `JUDGEKIT_DISABLE_ENV_FILE` opts out, and the test suite sets it.
+
+### Changed
+
+- **The Groq default model is now `openai/gpt-oss-20b`**, down from the 120b.
+  It judges the example set in about a fifth of the time for near-identical
+  results, which is the better default for a first run. `--model` or
+  `$JUDGEKIT_MODEL` selects the larger one.
+
 ### Fixed
 
 **From the first run against a live Groq key.** The container work proved the
@@ -54,6 +68,16 @@ stack runs; this proved the tool is *correct* when the judge is a real model.
 - **Errors were counted but never explained.** The terminal said "8 errored"
   while the reason - already present in the JSON, the HTML report and the
   dashboard - was the one thing missing from the first view anyone sees.
+- **A .env file was decorative as far as the CLI was concerned.** Nothing read
+  it, so `JUDGEKIT_PROVIDER=groq` sat in the file while every run quietly used
+  the stub and reported success - the failure looked exactly like the tool
+  working.
+- **`-p stub` could report a model the stub never used.** With `$JUDGEKIT_MODEL`
+  set, the CLI forwarded it to the stub, which reports whatever model it is
+  handed: the summary read `stub/openai/gpt-oss-120b`, and that model would have
+  been written onto the stored run. A provenance record naming a judge that
+  produced none of its scores is a bad failure in a tool whose argument is that
+  provenance travels with the score.
 - **The Groq adapter 400d on prompts that did not say "json".** It always asks
   for `response_format: json_object`, and the API refuses that unless a message
   contains the literal word. The built-in judge prompt happens to, so this only

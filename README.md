@@ -9,7 +9,7 @@
 > **Status: v0.1.0.** Library, CLI, providers, service, Kubernetes manifests and
 > dashboard are all implemented. 441 tests, no API key and no network required.
 
----
+----
 
 ## The problem
 

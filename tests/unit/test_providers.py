@@ -541,3 +541,23 @@ class TestLiveProviders:
 
         assert "score" in completion.text
         assert completion.usage.total_tokens > 0
+
+
+class TestSharedLimiter:
+    async def test_same_account_shares_one_bucket(self) -> None:
+        from judgekit.providers._http import limiter_key, shared_limiter
+
+        key = limiter_key("groq", "https://x", "secret")
+        assert shared_limiter(key, 30) is shared_limiter(key, 30)
+
+    async def test_different_accounts_do_not(self) -> None:
+        from judgekit.providers._http import limiter_key, shared_limiter
+
+        a = shared_limiter(limiter_key("groq", "https://x", "one"), 30)
+        b = shared_limiter(limiter_key("groq", "https://x", "two"), 30)
+        assert a is not b
+
+    def test_key_does_not_contain_the_api_key(self) -> None:
+        from judgekit.providers._http import limiter_key
+
+        assert "secret" not in limiter_key("groq", "https://x", "secret")

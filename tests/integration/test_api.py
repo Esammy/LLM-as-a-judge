@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -356,3 +357,35 @@ class TestSaveRunKeepsSubmissionTime:
         assert after["created_at"] == before
         assert after["error"] is None
         assert len(after["judgements"]) == after["total"] > 0
+
+
+class TestListingIsLight:
+    async def test_listing_does_not_load_judgements(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        from sqlalchemy import event
+
+        await submit(client, app)
+        statements: list[str] = []
+        engine = app.state.engine.sync_engine
+
+        def record(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            assert (await client.get("/runs")).status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+
+        assert not any("FROM judgements" in s for s in statements)
+
+    async def test_pagination_is_stable_for_equal_timestamps(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        for _ in range(4):
+            await submit(client, app)
+        first = (await client.get("/runs", params={"limit": 2, "offset": 0})).json()["runs"]
+        second = (await client.get("/runs", params={"limit": 2, "offset": 2})).json()["runs"]
+        ids = [r["run_id"] for r in first + second]
+        assert len(ids) == len(set(ids)) == 4

@@ -16,9 +16,10 @@ from judgekit.core.errors import ProviderError
 from judgekit.providers._http import (
     DEFAULT_TIMEOUT,
     Pricing,
-    RateLimiter,
+    limiter_key,
     post_json,
     require_key,
+    shared_limiter,
 )
 from judgekit.providers.base import Completion, CompletionRequest, Usage
 
@@ -68,7 +69,8 @@ class GeminiProvider:
             api_key or os.environ.get(ENV_VAR), provider="gemini", env_var=ENV_VAR
         )
         self._model = model
-        self._limiter = RateLimiter(requests_per_minute)
+        self._rpm = requests_per_minute
+        self._limiter_key = limiter_key("gemini", API_ROOT, self._api_key)
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
         self._pricing = PRICING.get(model, Pricing())
@@ -111,7 +113,7 @@ class GeminiProvider:
             f"{API_ROOT}/models/{self._model}:generateContent",
             payload=self._payload(request),
             params={"key": self._api_key},
-            limiter=self._limiter,
+            limiter=shared_limiter(self._limiter_key, self._rpm),
             provider="gemini",
         )
 

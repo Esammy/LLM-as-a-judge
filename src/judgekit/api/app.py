@@ -197,13 +197,26 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
             provider=provider_name,
         )
 
-        await request.app.state.queue.enqueue(
-            run_id=run_id,
-            dataset_path=dataset_path,
-            rubric_path=rubric_path,
-            provider_name=provider_name,
-            concurrency=payload.concurrency or settings.concurrency,
-        )
+        # Commit before enqueueing. The session dependency would otherwise
+        # commit only after this handler returns, by which time a fast worker
+        # may already have looked for a row that does not exist yet.
+        await session.commit()
+
+        try:
+            await request.app.state.queue.enqueue(
+                run_id=run_id,
+                dataset_path=dataset_path,
+                rubric_path=rubric_path,
+                provider_name=provider_name,
+                concurrency=payload.concurrency or settings.concurrency,
+            )
+        except Exception as exc:
+            log.exception("enqueue failed", extra={"run_id": run_id})
+            await repo.mark_status(session, run_id, "failed", error=f"enqueue failed: {exc}")
+            await session.commit()
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "could not queue the run"
+            ) from exc
 
         get_metrics().queue_depth.inc()
         return SubmitRunResponse(run_id=run_id, status="queued")
@@ -275,6 +288,20 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
                 raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run {run_id!r}")
             rows[key] = row
 
+        for key, row in rows.items():
+            if row.status != "completed":
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"{key} run {row.run_id!r} is {row.status!r}; "
+                    "only completed runs can be compared",
+                )
+        if rows["baseline"].dataset_name != rows["candidate"].dataset_name:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "runs used different datasets "
+                f"({rows['baseline'].dataset_name!r} vs {rows['candidate'].dataset_name!r})",
+            )
+
         try:
             result = compare(repo.to_result(rows["baseline"]), repo.to_result(rows["candidate"]))
         except IncomparableScoresError as exc:
@@ -290,13 +317,22 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
             mean_score_after=result.mean_score_after,
             regressions=tuple(d.case_id for d in result.regressions),
             improvements=tuple(d.case_id for d in result.improvements),
+            only_in_baseline=result.only_in_baseline,
+            only_in_candidate=result.only_in_candidate,
             gate_passed=result.gate(max_pass_rate_drop=max_drop),
         )
 
     @app.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["runs"])
     async def delete_run(run_id: str, session: SessionDep) -> Response:
-        if not await repo.delete_run(session, run_id):
+        row = await repo.get_run(session, run_id)
+        if row is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"no run {run_id!r}")
+        if row.status in {"queued", "running"}:
+            # The job would write its result straight back, resurrecting the run.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"run {run_id!r} is {row.status}; wait for it to finish"
+            )
+        await repo.delete_run(session, run_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return app

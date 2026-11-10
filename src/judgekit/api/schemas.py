@@ -152,6 +152,8 @@ class ComparisonOut(BaseModel):
     mean_score_after: float
     regressions: tuple[str, ...]
     improvements: tuple[str, ...]
+    only_in_baseline: tuple[str, ...] = ()
+    only_in_candidate: tuple[str, ...] = ()
     gate_passed: bool
 
 

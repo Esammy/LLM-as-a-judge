@@ -295,3 +295,64 @@ class TestGetAndDelete:
 
     async def test_deleting_an_unknown_run_is_404(self, client: httpx.AsyncClient) -> None:
         assert (await client.delete("/runs/ghost")).status_code == 404
+
+
+class TestLifecycleGuards:
+    """A run that has not finished must not be deleted or compared."""
+
+    async def _reserve(self, app: FastAPI, run_id: str, status: str) -> None:
+        from judgekit.storage import repository as repo
+        from judgekit.storage.database import session_scope
+
+        async with session_scope(app.state.session_factory) as session:
+            await repo.reserve_run(
+                session,
+                run_id=run_id,
+                dataset_name="example",
+                rubric_id="answer-quality",
+                rubric_version="2",
+                rubric_fingerprint="f" * 64,
+                provider="stub",
+            )
+            await repo.mark_status(session, run_id, status)
+
+    @pytest.mark.parametrize("state", ["queued", "running"])
+    async def test_cannot_delete_an_active_run(
+        self, client: httpx.AsyncClient, app: FastAPI, state: str
+    ) -> None:
+        await self._reserve(app, "active1", state)
+        assert (await client.delete("/runs/active1")).status_code == 409
+        assert (await client.get("/runs/active1")).status_code == 200
+
+    async def test_cannot_compare_an_unfinished_run(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        done = await submit(client, app)
+        await self._reserve(app, "pending1", "running")
+        response = await client.post("/compare", params={"baseline": done, "candidate": "pending1"})
+        assert response.status_code == 409
+        assert "completed" in response.json()["detail"]
+
+    async def test_compare_reports_cases_missing_on_either_side(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        a = await submit(client, app)
+        b = await submit(client, app)
+        body = (await client.post("/compare", params={"baseline": a, "candidate": b})).json()
+        assert body["only_in_baseline"] == []
+        assert body["only_in_candidate"] == []
+
+
+class TestSaveRunKeepsSubmissionTime:
+    async def test_created_at_is_not_moved_by_completion(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        response = await client.post("/runs", json={"dataset": DATASET, "rubric": V2})
+        run_id = response.json()["run_id"]
+        before = (await client.get(f"/runs/{run_id}")).json()["created_at"]
+        await app.state.queue.wait_for_idle()
+        after = (await client.get(f"/runs/{run_id}")).json()
+        assert after["status"] == "completed"
+        assert after["created_at"] == before
+        assert after["error"] is None
+        assert len(after["judgements"]) == after["total"] > 0

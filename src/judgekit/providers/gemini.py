@@ -112,7 +112,7 @@ class GeminiProvider:
             self._client,
             f"{API_ROOT}/models/{self._model}:generateContent",
             payload=self._payload(request),
-            params={"key": self._api_key},
+            headers={"x-goog-api-key": self._api_key},
             limiter=shared_limiter(self._limiter_key, self._rpm),
             provider="gemini",
         )

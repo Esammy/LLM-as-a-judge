@@ -26,6 +26,8 @@ import asyncio
 import hashlib
 import time
 import weakref
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -125,8 +127,14 @@ def _retry_after(response: httpx.Response, fallback: float) -> float:
         try:
             return max(0.0, float(header))
         except ValueError:
-            # The HTTP-date form is legal but rare; the fallback is fine there.
-            pass
+            # The HTTP-date form: wait until that moment.
+            try:
+                when = parsedate_to_datetime(header)
+            except (TypeError, ValueError):
+                return fallback
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            return max(0.0, (when - datetime.now(UTC)).total_seconds())
     return fallback
 
 

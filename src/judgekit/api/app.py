@@ -19,12 +19,14 @@ is worse than no diff.
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
@@ -46,6 +48,7 @@ from judgekit.core.errors import IncomparableScoresError, JudgekitError
 from judgekit.core.rubric import Rubric
 from judgekit.core.runner import compare
 from judgekit.observability import configure_logging, get_metrics
+from judgekit.providers import registry
 from judgekit.storage import repository as repo
 from judgekit.storage.database import (
     create_engine,
@@ -57,6 +60,9 @@ from judgekit.worker.queue import INLINE, create_queue
 from judgekit.worker.tasks import resolve_inside
 
 log = logging.getLogger(__name__)
+
+# Longer than the worker's job_timeout, so a run that is merely slow is never swept.
+STALE_RUN_AFTER = timedelta(hours=2)
 
 
 @asynccontextmanager
@@ -82,6 +88,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = factory
     app.state.queue = queue
 
+    if settings.api_key is None:
+        log.warning("JUDGEKIT_API_KEY is not set; POST /runs and DELETE /runs are unauthenticated")
+
+    # Inline jobs die with the process, so anything still active at startup is
+    # orphaned. With a worker pool a queued run may legitimately be waiting, so
+    # only sweep runs older than any job could still be alive.
+    stale_after = timedelta(0) if app.state.queue_kind == INLINE else STALE_RUN_AFTER
+    async with session_scope(factory) as session:
+        swept = await repo.fail_stale_runs(
+            session, older_than=stale_after, reason="abandoned: the process running it stopped"
+        )
+    if swept:
+        log.warning("failed abandoned runs", extra={"count": swept})
+
     log.info("api started", extra={"database": settings.database_url.split("://")[0]})
     try:
         yield
@@ -100,6 +120,20 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
 
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+
+async def require_api_key(
+    request: Request, x_api_key: Annotated[str | None, Header()] = None
+) -> None:
+    """Reject the call unless it carries the configured key. No-op when none is set."""
+    expected: str | None = request.app.state.settings.api_key
+    if expected is None:
+        return
+    if x_api_key is None or not secrets.compare_digest(x_api_key.encode(), expected.encode()):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing or invalid API key")
+
+
+AuthDep = Depends(require_api_key)
 
 
 def create_app(settings: Settings | None = None, *, queue_kind: str | None = None) -> FastAPI:
@@ -145,14 +179,20 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
             async with session_scope(request.app.state.session_factory) as session:
                 await session.execute(text("SELECT 1"))
         except Exception as exc:
+            # The exception text can carry hostnames and connection details, so
+            # it goes to the log, not to whoever asked.
+            log.warning("readiness check failed", exc_info=exc)
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return ReadyOut(
-                status="unavailable", database="down", detail=f"{type(exc).__name__}: {exc}"
-            )
+            return ReadyOut(status="unavailable", database="down", detail=type(exc).__name__)
         return ReadyOut(status="ready", database="up")
 
     @app.get("/metrics", tags=["ops"], include_in_schema=False)
-    async def metrics() -> Response:
+    async def metrics(request: Request) -> Response:
+        # Computed from the database at scrape time. Incrementing in the API and
+        # decrementing in the worker cannot work: they are separate processes
+        # with separate registries.
+        async with session_scope(request.app.state.session_factory) as session:
+            get_metrics().queue_depth.set(await repo.count_active(session))
         return Response(
             content=generate_latest(get_metrics().registry),
             media_type=CONTENT_TYPE_LATEST,
@@ -163,6 +203,7 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
         response_model=SubmitRunResponse,
         status_code=status.HTTP_202_ACCEPTED,
         tags=["runs"],
+        dependencies=[AuthDep],
     )
     async def submit_run(
         payload: SubmitRunRequest, request: Request, session: SessionDep
@@ -185,7 +226,12 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
         run_id = uuid.uuid4().hex[:12]
-        provider_name = payload.provider or settings.provider
+        provider_name = registry.resolve_name(payload.provider or settings.provider)
+        if provider_name not in registry.available():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unknown provider {provider_name!r}. Available: {', '.join(registry.available())}",
+            )
 
         await repo.reserve_run(
             session,
@@ -218,7 +264,6 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
                 status.HTTP_503_SERVICE_UNAVAILABLE, "could not queue the run"
             ) from exc
 
-        get_metrics().queue_depth.inc()
         return SubmitRunResponse(run_id=run_id, status="queued")
 
     @app.get("/runs", response_model=RunList, tags=["runs"])
@@ -322,7 +367,12 @@ def create_app(settings: Settings | None = None, *, queue_kind: str | None = Non
             gate_passed=result.gate(max_pass_rate_drop=max_drop),
         )
 
-    @app.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["runs"])
+    @app.delete(
+        "/runs/{run_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        tags=["runs"],
+        dependencies=[AuthDep],
+    )
     async def delete_run(run_id: str, session: SessionDep) -> Response:
         row = await repo.get_run(session, run_id)
         if row is None:

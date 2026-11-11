@@ -9,7 +9,9 @@ offline CI job with everything else.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -89,7 +91,9 @@ class TestOps:
 
         assert response.status_code == 503
         assert response.json()["database"] == "down"
-        assert "database is down" in response.json()["detail"]
+        # The class name is enough to triage; the message may carry credentials.
+        assert response.json()["detail"] == "ConnectionError"
+        assert "database is down" not in response.text
 
     async def test_metrics_are_exposed_in_prometheus_format(
         self, client: httpx.AsyncClient
@@ -171,11 +175,14 @@ class TestSubmitRun:
         assert response.status_code == 400
 
     async def test_a_failed_run_records_its_reason(
-        self, client: httpx.AsyncClient, app: FastAPI
+        self, client: httpx.AsyncClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A job that vanishes is far harder to diagnose than one that explains itself."""
+        # A real provider with no key passes submit-time validation and then
+        # fails inside the worker, which is the path this test is about.
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         response = await client.post(
-            "/runs", json={"dataset": DATASET, "rubric": V2, "provider": "nonesuch"}
+            "/runs", json={"dataset": DATASET, "rubric": V2, "provider": "groq"}
         )
         run_id = response.json()["run_id"]
         await app.state.queue.wait_for_idle()
@@ -183,7 +190,7 @@ class TestSubmitRun:
         detail = (await client.get(f"/runs/{run_id}")).json()
 
         assert detail["status"] == "failed"
-        assert "nonesuch" in detail["error"]
+        assert "GROQ_API_KEY" in detail["error"]
 
 
 class TestListRuns:
@@ -295,3 +302,190 @@ class TestGetAndDelete:
 
     async def test_deleting_an_unknown_run_is_404(self, client: httpx.AsyncClient) -> None:
         assert (await client.delete("/runs/ghost")).status_code == 404
+
+
+class TestLifecycleGuards:
+    """A run that has not finished must not be deleted or compared."""
+
+    async def _reserve(self, app: FastAPI, run_id: str, status: str) -> None:
+        from judgekit.storage import repository as repo
+        from judgekit.storage.database import session_scope
+
+        async with session_scope(app.state.session_factory) as session:
+            await repo.reserve_run(
+                session,
+                run_id=run_id,
+                dataset_name="example",
+                rubric_id="answer-quality",
+                rubric_version="2",
+                rubric_fingerprint="f" * 64,
+                provider="stub",
+            )
+            await repo.mark_status(session, run_id, status)
+
+    @pytest.mark.parametrize("state", ["queued", "running"])
+    async def test_cannot_delete_an_active_run(
+        self, client: httpx.AsyncClient, app: FastAPI, state: str
+    ) -> None:
+        await self._reserve(app, "active1", state)
+        assert (await client.delete("/runs/active1")).status_code == 409
+        assert (await client.get("/runs/active1")).status_code == 200
+
+    async def test_cannot_compare_an_unfinished_run(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        done = await submit(client, app)
+        await self._reserve(app, "pending1", "running")
+        response = await client.post("/compare", params={"baseline": done, "candidate": "pending1"})
+        assert response.status_code == 409
+        assert "completed" in response.json()["detail"]
+
+    async def test_compare_reports_cases_missing_on_either_side(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        a = await submit(client, app)
+        b = await submit(client, app)
+        body = (await client.post("/compare", params={"baseline": a, "candidate": b})).json()
+        assert body["only_in_baseline"] == []
+        assert body["only_in_candidate"] == []
+
+
+class TestSaveRunKeepsSubmissionTime:
+    async def test_created_at_is_not_moved_by_completion(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        response = await client.post("/runs", json={"dataset": DATASET, "rubric": V2})
+        run_id = response.json()["run_id"]
+        before = (await client.get(f"/runs/{run_id}")).json()["created_at"]
+        await app.state.queue.wait_for_idle()
+        after = (await client.get(f"/runs/{run_id}")).json()
+        assert after["status"] == "completed"
+        assert after["created_at"] == before
+        assert after["error"] is None
+        assert len(after["judgements"]) == after["total"] > 0
+
+
+class TestListingIsLight:
+    async def test_listing_does_not_load_judgements(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        from sqlalchemy import event
+
+        await submit(client, app)
+        statements: list[str] = []
+        engine = app.state.engine.sync_engine
+
+        def record(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+            statements.append(statement)
+
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            assert (await client.get("/runs")).status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+
+        assert not any("FROM judgements" in s for s in statements)
+
+    async def test_pagination_is_stable_for_equal_timestamps(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        for _ in range(4):
+            await submit(client, app)
+        first = (await client.get("/runs", params={"limit": 2, "offset": 0})).json()["runs"]
+        second = (await client.get("/runs", params={"limit": 2, "offset": 2})).json()["runs"]
+        ids = [r["run_id"] for r in first + second]
+        assert len(ids) == len(set(ids)) == 4
+
+
+class TestHardening:
+    async def test_unknown_provider_is_rejected_up_front(self, client: httpx.AsyncClient) -> None:
+        response = await client.post(
+            "/runs", json={"dataset": DATASET, "rubric": V2, "provider": "nope"}
+        )
+        assert response.status_code == 400
+        assert "unknown provider" in response.json()["detail"]
+
+    async def test_readyz_does_not_leak_exception_text(self, app: FastAPI) -> None:
+        class Broken:
+            def __call__(self) -> Any:
+                raise RuntimeError("password=hunter2 host=db.internal")
+
+        app.state.session_factory = Broken()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            response = await c.get("/readyz")
+        assert response.status_code == 503
+        assert "hunter2" not in response.text
+
+    async def test_metrics_queue_depth_comes_from_the_database(
+        self, client: httpx.AsyncClient, app: FastAPI
+    ) -> None:
+        from judgekit.storage import repository as repo
+        from judgekit.storage.database import session_scope
+
+        async with session_scope(app.state.session_factory) as session:
+            await repo.reserve_run(
+                session,
+                run_id="q1",
+                dataset_name="example",
+                rubric_id="r",
+                rubric_version="1",
+                rubric_fingerprint="f" * 64,
+                provider="stub",
+            )
+        assert "judgekit_queue_depth 1.0" in (await client.get("/metrics")).text
+
+    async def test_stale_active_runs_are_failed_on_startup(self, settings: Settings) -> None:
+        from judgekit.storage import repository as repo
+        from judgekit.storage.database import session_scope
+
+        application = create_app(settings)
+        async with LifespanManager(application):
+            async with session_scope(application.state.session_factory) as session:
+                await repo.reserve_run(
+                    session,
+                    run_id="orphan",
+                    dataset_name="example",
+                    rubric_id="r",
+                    rubric_version="1",
+                    rubric_fingerprint="f" * 64,
+                    provider="stub",
+                )
+                swept = await repo.fail_stale_runs(
+                    session, older_than=timedelta(0), reason="abandoned"
+                )
+            assert swept == 1
+            transport = httpx.ASGITransport(app=application)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                body = (await c.get("/runs/orphan")).json()
+            assert body["status"] == "failed"
+            assert body["error"] == "abandoned"
+            assert body["finished_at"] is not None
+
+
+class TestApiKey:
+    @pytest.fixture
+    async def guarded(self, settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
+        application = create_app(settings.model_copy(update={"api_key": "s3cret"}))
+        async with LifespanManager(application):
+            transport = httpx.ASGITransport(app=application)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                yield c
+
+    async def test_mutations_require_the_key(self, guarded: httpx.AsyncClient) -> None:
+        body = {"dataset": DATASET, "rubric": V2}
+        assert (await guarded.post("/runs", json=body)).status_code == 401
+        assert (
+            await guarded.post("/runs", json=body, headers={"X-API-Key": "wrong"})
+        ).status_code == 401
+        assert (await guarded.delete("/runs/x")).status_code == 401
+
+    async def test_the_right_key_is_accepted(self, guarded: httpx.AsyncClient) -> None:
+        response = await guarded.post(
+            "/runs", json={"dataset": DATASET, "rubric": V2}, headers={"X-API-Key": "s3cret"}
+        )
+        assert response.status_code == 202
+
+    async def test_reads_and_probes_stay_open(self, guarded: httpx.AsyncClient) -> None:
+        for path in ("/healthz", "/readyz", "/metrics", "/runs"):
+            assert (await guarded.get(path)).status_code == 200

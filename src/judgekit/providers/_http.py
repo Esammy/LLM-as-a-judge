@@ -23,7 +23,11 @@ three times turns an obvious "your key is wrong" into a slow, confusing failure.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
+import weakref
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -88,6 +92,34 @@ class RateLimiter:
             await asyncio.sleep(wait)
 
 
+_LIMITERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, RateLimiter]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def shared_limiter(key: str, requests_per_minute: int) -> RateLimiter:
+    """The limiter for ``key``, shared by every provider instance that asks.
+
+    A provider is built per run, so a limiter owned by the provider is not
+    shared between runs: two concurrent runs would each get the full per-minute
+    allowance. Keying on the account (see :func:`limiter_key`) makes the bucket
+    match what the remote side actually counts. Scoped per event loop because an
+    ``asyncio.Lock`` must not cross loops.
+    """
+    loop = asyncio.get_running_loop()
+    bucket = _LIMITERS.setdefault(loop, {})
+    limiter = bucket.get(key)
+    if limiter is None or limiter.capacity != float(requests_per_minute):
+        limiter = bucket[key] = RateLimiter(requests_per_minute)
+    return limiter
+
+
+def limiter_key(provider: str, endpoint: str, api_key: str) -> str:
+    """Identify one rate-limit budget without keeping the API key around."""
+    digest = hashlib.sha256(api_key.encode()).hexdigest()[:12]
+    return f"{provider}|{endpoint}|{digest}"
+
+
 def _retry_after(response: httpx.Response, fallback: float) -> float:
     """How long to wait, preferring the server's own instruction."""
     header = response.headers.get("retry-after")
@@ -95,8 +127,14 @@ def _retry_after(response: httpx.Response, fallback: float) -> float:
         try:
             return max(0.0, float(header))
         except ValueError:
-            # The HTTP-date form is legal but rare; the fallback is fine there.
-            pass
+            # The HTTP-date form: wait until that moment.
+            try:
+                when = parsedate_to_datetime(header)
+            except (TypeError, ValueError):
+                return fallback
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            return max(0.0, (when - datetime.now(UTC)).total_seconds())
     return fallback
 
 
@@ -149,7 +187,9 @@ async def post_json(
         detail = response.text[:300]
 
         if response.status_code not in RETRYABLE_STATUS:
-            raise ProviderError(f"{provider} returned {response.status_code}: {detail}")
+            raise ProviderError(
+                f"{provider} returned {response.status_code}: {detail}", retryable=False
+            )
 
         last_error = f"HTTP {response.status_code}: {detail}"
         if attempt == retries:
@@ -157,7 +197,9 @@ async def post_json(
 
         await asyncio.sleep(_retry_after(response, backoff_seconds * (2**attempt)))
 
-    raise ProviderError(f"{provider} failed after {retries + 1} attempts - {last_error}")
+    raise ProviderError(
+        f"{provider} failed after {retries + 1} attempts - {last_error}", retryable=False
+    )
 
 
 def require_key(key: str | None, *, provider: str, env_var: str) -> str:

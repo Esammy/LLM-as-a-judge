@@ -76,6 +76,8 @@ class Judgement(BaseModel):
     usage: Usage = Usage()
     elapsed_ms: float = 0.0
     error: str | None = None
+    retryable: bool = Field(default=True, exclude=True)
+    """Whether re-running this case could change an ERROR. Not part of the result."""
 
     @property
     def ok(self) -> bool:
@@ -208,6 +210,7 @@ class Judge:
                 family=self.provider.family,
                 elapsed_ms=elapsed(),
                 error=f"{type(exc).__name__}: {exc}",
+                retryable=bool(getattr(exc, "retryable", True)),
             )
 
         if completion.truncated:

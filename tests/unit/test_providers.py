@@ -238,6 +238,7 @@ class TestGemini:
         def handler(request: httpx.Request) -> httpx.Response:
             seen["payload"] = __import__("json").loads(request.content)
             seen["url"] = str(request.url)
+            seen["headers"] = dict(request.headers)
             return httpx.Response(200, json=gemini_body())
 
         async with transport(handler) as client:
@@ -249,7 +250,9 @@ class TestGemini:
         assert payload["generationConfig"]["maxOutputTokens"] == 256
         # Judging returns JSON; asking at the API level beats asking in prose.
         assert payload["generationConfig"]["responseMimeType"] == "application/json"
-        assert "key=secret" in seen["url"]
+        # The key travels in a header, so it never lands in URLs or access logs.
+        assert "secret" not in seen["url"]
+        assert seen["headers"]["x-goog-api-key"] == "secret"
 
     async def test_omits_the_system_instruction_when_absent(self) -> None:
         seen: dict[str, Any] = {}
@@ -541,3 +544,45 @@ class TestLiveProviders:
 
         assert "score" in completion.text
         assert completion.usage.total_tokens > 0
+
+
+class TestSharedLimiter:
+    async def test_same_account_shares_one_bucket(self) -> None:
+        from judgekit.providers._http import limiter_key, shared_limiter
+
+        key = limiter_key("groq", "https://x", "secret")
+        assert shared_limiter(key, 30) is shared_limiter(key, 30)
+
+    async def test_different_accounts_do_not(self) -> None:
+        from judgekit.providers._http import limiter_key, shared_limiter
+
+        a = shared_limiter(limiter_key("groq", "https://x", "one"), 30)
+        b = shared_limiter(limiter_key("groq", "https://x", "two"), 30)
+        assert a is not b
+
+    def test_key_does_not_contain_the_api_key(self) -> None:
+        from judgekit.providers._http import limiter_key
+
+        assert "secret" not in limiter_key("groq", "https://x", "secret")
+
+
+class TestRetryAfter:
+    def test_seconds_form(self) -> None:
+        from judgekit.providers._http import _retry_after
+
+        assert _retry_after(httpx.Response(429, headers={"retry-after": "7"}), 1.0) == 7.0
+
+    def test_http_date_form_waits_until_then(self) -> None:
+        from datetime import UTC, datetime, timedelta
+        from email.utils import format_datetime
+
+        from judgekit.providers._http import _retry_after
+
+        when = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+        wait = _retry_after(httpx.Response(429, headers={"retry-after": when}), 1.0)
+        assert 20.0 < wait <= 30.0
+
+    def test_garbage_falls_back(self) -> None:
+        from judgekit.providers._http import _retry_after
+
+        assert _retry_after(httpx.Response(429, headers={"retry-after": "soon"}), 2.5) == 2.5

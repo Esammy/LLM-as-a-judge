@@ -306,3 +306,41 @@ class TestCompare:
             after_verdict=Verdict.PASS,
         )
         assert delta.improved
+
+
+class RejectingProvider:
+    """Always refuses the request, the way a bad API key does."""
+
+    name = "rejecting"
+    model = "rejecting-v1"
+    family = "rejecting"
+
+    def __init__(self, *, retryable: bool) -> None:
+        self.attempts = 0
+        self._retryable = retryable
+
+    async def complete(self, request: CompletionRequest) -> Completion:
+        from judgekit.core.errors import ProviderError
+
+        self.attempts += 1
+        raise ProviderError("nope", retryable=self._retryable)
+
+
+class TestRetryability:
+    async def test_does_not_retry_a_request_the_provider_rejected(self, rubric: Rubric) -> None:
+        provider = RejectingProvider(retryable=False)
+        runner = Runner(Judge(rubric, provider), retries=3, backoff_seconds=0.0)
+        result = await runner.run(many_cases(1))
+        assert result.errored == 1
+        assert provider.attempts == 1
+
+    async def test_still_retries_a_retryable_provider_error(self, rubric: Rubric) -> None:
+        provider = RejectingProvider(retryable=True)
+        runner = Runner(Judge(rubric, provider), retries=2, backoff_seconds=0.0)
+        await runner.run(many_cases(1))
+        assert provider.attempts == 3
+
+    async def test_retryable_flag_is_not_serialised(self, rubric: Rubric) -> None:
+        provider = RejectingProvider(retryable=False)
+        result = await Runner(Judge(rubric, provider), retries=0).run(many_cases(1))
+        assert "retryable" not in result.judgements[0].model_dump()

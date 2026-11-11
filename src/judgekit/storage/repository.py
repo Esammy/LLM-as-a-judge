@@ -10,10 +10,11 @@ like evidence.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import lazyload
 
 from judgekit.core.judge import Judgement
 from judgekit.core.models import Flag, Verdict
@@ -22,44 +23,57 @@ from judgekit.core.runner import RunResult
 from judgekit.storage.models import JudgementRow, RunRow
 
 
+def _judgement_rows(run: RunResult) -> list[JudgementRow]:
+    return [
+        JudgementRow(
+            case_id=j.case_id,
+            score=j.score,
+            verdict=j.verdict.value,
+            reasoning=j.reasoning,
+            criterion_scores=dict(j.criterion_scores),
+            flags=[f.value for f in j.flags],
+            model=j.model,
+            family=j.family,
+            elapsed_ms=j.elapsed_ms,
+            error=j.error,
+        )
+        for j in run.judgements
+    ]
+
+
+def _apply(row: RunRow, run: RunResult, *, status: str) -> None:
+    """Copy a finished run's aggregates onto ``row``.
+
+    Deliberately leaves ``created_at`` alone: that is when the run was
+    *submitted*, and history is ordered by it.
+    """
+    row.dataset_name = run.dataset_name
+    row.dataset_version = run.dataset_version
+    row.rubric_id = run.rubric.id
+    row.rubric_version = run.rubric.version
+    row.rubric_fingerprint = run.rubric.fingerprint
+    row.provider = run.provider
+    row.model = run.model
+    row.status = status
+    row.error = None
+    row.total = run.total
+    row.passed = run.passed
+    row.failed = run.failed
+    row.errored = run.errored
+    row.pass_rate = run.pass_rate
+    row.mean_score = run.mean_score
+    row.prompt_tokens = run.usage.prompt_tokens
+    row.completion_tokens = run.usage.completion_tokens
+    row.cost_usd = run.usage.cost_usd
+    row.started_at = run.started_at
+    row.finished_at = run.finished_at
+
+
 def _to_row(run: RunResult, *, status: str = "completed") -> RunRow:
-    return RunRow(
-        run_id=run.run_id,
-        dataset_name=run.dataset_name,
-        dataset_version=run.dataset_version,
-        rubric_id=run.rubric.id,
-        rubric_version=run.rubric.version,
-        rubric_fingerprint=run.rubric.fingerprint,
-        provider=run.provider,
-        model=run.model,
-        status=status,
-        total=run.total,
-        passed=run.passed,
-        failed=run.failed,
-        errored=run.errored,
-        pass_rate=run.pass_rate,
-        mean_score=run.mean_score,
-        prompt_tokens=run.usage.prompt_tokens,
-        completion_tokens=run.usage.completion_tokens,
-        cost_usd=run.usage.cost_usd,
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        judgements=[
-            JudgementRow(
-                case_id=j.case_id,
-                score=j.score,
-                verdict=j.verdict.value,
-                reasoning=j.reasoning,
-                criterion_scores=dict(j.criterion_scores),
-                flags=[f.value for f in j.flags],
-                model=j.model,
-                family=j.family,
-                elapsed_ms=j.elapsed_ms,
-                error=j.error,
-            )
-            for j in run.judgements
-        ],
-    )
+    row = RunRow(run_id=run.run_id)
+    _apply(row, run, status=status)
+    row.judgements = _judgement_rows(run)
+    return row
 
 
 def to_result(row: RunRow) -> RunResult:
@@ -138,25 +152,41 @@ async def reserve_run(
 
 async def mark_status(
     session: AsyncSession, run_id: str, status: str, *, error: str | None = None
-) -> None:
+) -> bool:
+    """Move a run to ``status``. Returns False when the run does not exist."""
     row = await session.get(RunRow, run_id)
     if row is None:
-        return
+        return False
     row.status = status
     row.error = error
     if status == "running":
         row.started_at = datetime.now(UTC)
     elif status in {"completed", "failed"}:
         row.finished_at = datetime.now(UTC)
+    return True
 
 
 async def save_run(session: AsyncSession, run: RunResult, *, status: str = "completed") -> RunRow:
-    """Persist a finished run, replacing any reserved placeholder."""
-    await session.execute(delete(RunRow).where(RunRow.run_id == run.run_id))
+    """Persist a finished run, filling in its reserved placeholder if there is one.
+
+    The placeholder is updated in place rather than deleted and re-inserted, so
+    ``created_at`` keeps meaning "when it was submitted" and a run's position in
+    history does not move when it finishes.
+    """
+    row = await session.get(RunRow, run.run_id)
+    if row is None:
+        row = _to_row(run, status=status)
+        session.add(row)
+        await session.flush()
+        return row
+
+    # Flush removals before adding replacements: the unit of work runs inserts
+    # before deletes, which would trip the (run_id, case_id) unique index.
+    row.judgements.clear()
     await session.flush()
 
-    row = _to_row(run, status=status)
-    session.add(row)
+    _apply(row, run, status=status)
+    row.judgements = _judgement_rows(run)
     await session.flush()
     return row
 
@@ -175,7 +205,17 @@ async def list_runs(
     offset: int = 0,
 ) -> Sequence[RunRow]:
     """Most recent runs first, optionally narrowed."""
-    query = select(RunRow).order_by(RunRow.created_at.desc()).limit(limit).offset(offset)
+    # Listings render summaries only. ``lazyload`` stops the relationship's default
+    # eager load from pulling every judgement of every run on the page.
+    query = (
+        select(RunRow)
+        .options(lazyload(RunRow.judgements))
+        # run_id breaks ties so rows sharing a timestamp cannot repeat or vanish
+        # between pages.
+        .order_by(RunRow.created_at.desc(), RunRow.run_id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
 
     if rubric_fingerprint:
         query = query.where(RunRow.rubric_fingerprint == rubric_fingerprint)
@@ -201,15 +241,41 @@ async def comparable_history(
 
     query = (
         select(RunRow)
+        .options(lazyload(RunRow.judgements))
         .where(
             RunRow.rubric_fingerprint == row.rubric_fingerprint,
             RunRow.dataset_name == row.dataset_name,
             RunRow.status == "completed",
         )
-        .order_by(RunRow.created_at.desc())
+        .order_by(RunRow.created_at.desc(), RunRow.run_id.desc())
         .limit(limit)
     )
     return (await session.execute(query)).scalars().all()
+
+
+ACTIVE_STATUSES = ("queued", "running")
+
+
+async def count_active(session: AsyncSession) -> int:
+    """Runs that are queued or running right now."""
+    query = select(func.count()).select_from(RunRow).where(RunRow.status.in_(ACTIVE_STATUSES))
+    return int((await session.execute(query)).scalar_one())
+
+
+async def fail_stale_runs(session: AsyncSession, *, older_than: timedelta, reason: str) -> int:
+    """Fail runs still queued or running after ``older_than``.
+
+    A worker that dies mid-run leaves its row in ``running`` forever, which makes
+    the run undeletable and the queue-depth gauge wrong. Returns how many rows
+    were failed.
+    """
+    cutoff = datetime.now(UTC) - older_than
+    result = await session.execute(
+        update(RunRow)
+        .where(RunRow.status.in_(ACTIVE_STATUSES), RunRow.created_at < cutoff)
+        .values(status="failed", error=reason, finished_at=datetime.now(UTC))
+    )
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def delete_run(session: AsyncSession, run_id: str) -> bool:

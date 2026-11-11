@@ -61,7 +61,9 @@ async def execute_run(
     metrics = get_metrics()
 
     async with session_scope(session_factory) as session:
-        await repo.mark_status(session, run_id, "running")
+        found = await repo.mark_status(session, run_id, "running")
+    if not found:
+        log.warning("run row missing at start; creating it on completion", extra={"run_id": run_id})
 
     provider = None
     try:

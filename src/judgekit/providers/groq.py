@@ -18,9 +18,10 @@ from judgekit.core.errors import ProviderError
 from judgekit.providers._http import (
     DEFAULT_TIMEOUT,
     Pricing,
-    RateLimiter,
+    limiter_key,
     post_json,
     require_key,
+    shared_limiter,
 )
 from judgekit.providers.base import Completion, CompletionRequest, Usage
 
@@ -80,7 +81,8 @@ class GroqProvider:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._family = family
-        self._limiter = RateLimiter(requests_per_minute)
+        self._rpm = requests_per_minute
+        self._limiter_key = limiter_key("groq", self._base_url, self._api_key)
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
         self._pricing = PRICING.get(model, Pricing())
@@ -138,7 +140,7 @@ class GroqProvider:
             f"{self._base_url}/chat/completions",
             payload=self._payload(request),
             headers={"Authorization": f"Bearer {self._api_key}"},
-            limiter=self._limiter,
+            limiter=shared_limiter(self._limiter_key, self._rpm),
             provider="groq",
         )
 

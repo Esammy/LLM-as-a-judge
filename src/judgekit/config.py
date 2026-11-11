@@ -135,6 +135,9 @@ class Settings(BaseModel):
     """Structured logs by default. A container's stdout is read by a machine."""
 
     api_title: str = "judgekit"
+    api_key: str | None = None
+    """When set, ``POST /runs`` and ``DELETE /runs/{id}`` require this value in an
+    ``X-API-Key`` header. Unset leaves the API open, which suits local use."""
     cors_origins: tuple[str, ...] = ()
 
     @property
@@ -162,6 +165,7 @@ class Settings(BaseModel):
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
             log_json=flag("LOG_JSON", default=True),
             api_title=os.environ.get("JUDGEKIT_API_TITLE", "judgekit"),
+            api_key=os.environ.get("JUDGEKIT_API_KEY") or None,
             cors_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
         )
 

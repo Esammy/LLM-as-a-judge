@@ -10,10 +10,11 @@ like evidence.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import lazyload
 
 from judgekit.core.judge import Judgement
 from judgekit.core.models import Flag, Verdict
@@ -204,7 +205,17 @@ async def list_runs(
     offset: int = 0,
 ) -> Sequence[RunRow]:
     """Most recent runs first, optionally narrowed."""
-    query = select(RunRow).order_by(RunRow.created_at.desc()).limit(limit).offset(offset)
+    # Listings render summaries only. ``lazyload`` stops the relationship's default
+    # eager load from pulling every judgement of every run on the page.
+    query = (
+        select(RunRow)
+        .options(lazyload(RunRow.judgements))
+        # run_id breaks ties so rows sharing a timestamp cannot repeat or vanish
+        # between pages.
+        .order_by(RunRow.created_at.desc(), RunRow.run_id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
 
     if rubric_fingerprint:
         query = query.where(RunRow.rubric_fingerprint == rubric_fingerprint)
@@ -230,15 +241,41 @@ async def comparable_history(
 
     query = (
         select(RunRow)
+        .options(lazyload(RunRow.judgements))
         .where(
             RunRow.rubric_fingerprint == row.rubric_fingerprint,
             RunRow.dataset_name == row.dataset_name,
             RunRow.status == "completed",
         )
-        .order_by(RunRow.created_at.desc())
+        .order_by(RunRow.created_at.desc(), RunRow.run_id.desc())
         .limit(limit)
     )
     return (await session.execute(query)).scalars().all()
+
+
+ACTIVE_STATUSES = ("queued", "running")
+
+
+async def count_active(session: AsyncSession) -> int:
+    """Runs that are queued or running right now."""
+    query = select(func.count()).select_from(RunRow).where(RunRow.status.in_(ACTIVE_STATUSES))
+    return int((await session.execute(query)).scalar_one())
+
+
+async def fail_stale_runs(session: AsyncSession, *, older_than: timedelta, reason: str) -> int:
+    """Fail runs still queued or running after ``older_than``.
+
+    A worker that dies mid-run leaves its row in ``running`` forever, which makes
+    the run undeletable and the queue-depth gauge wrong. Returns how many rows
+    were failed.
+    """
+    cutoff = datetime.now(UTC) - older_than
+    result = await session.execute(
+        update(RunRow)
+        .where(RunRow.status.in_(ACTIVE_STATUSES), RunRow.created_at < cutoff)
+        .values(status="failed", error=reason, finished_at=datetime.now(UTC))
+    )
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def delete_run(session: AsyncSession, run_id: str) -> bool:

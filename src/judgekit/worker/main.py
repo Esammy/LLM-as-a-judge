@@ -20,7 +20,7 @@ from typing import Any, ClassVar
 from arq.connections import RedisSettings
 
 from judgekit.config import get_settings
-from judgekit.observability import configure_logging, get_metrics
+from judgekit.observability import configure_logging
 from judgekit.storage.database import (
     create_engine,
     create_schema,
@@ -48,7 +48,6 @@ async def run_evaluation(
         concurrency=concurrency,
         session_factory=ctx["session_factory"],
     )
-    get_metrics().queue_depth.dec()
     return run_id
 
 

@@ -161,7 +161,7 @@ class Runner:
         judgement = await self.judge.judge(case)
 
         attempt = 0
-        while judgement.verdict is Verdict.ERROR and attempt < self.retries:
+        while judgement.verdict is Verdict.ERROR and judgement.retryable and attempt < self.retries:
             await asyncio.sleep(self.backoff_seconds * (2**attempt))
             judgement = await self.judge.judge(case)
             attempt += 1

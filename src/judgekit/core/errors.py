@@ -30,7 +30,18 @@ class RubricLockError(JudgekitError):
 
 
 class ProviderError(JudgekitError):
-    """A model provider failed."""
+    """A model provider failed.
+
+    Args:
+        retryable: Whether trying the same request again could help. ``False``
+            for a rejected request (bad key, bad payload) and for a failure the
+            transport layer has already retried to exhaustion, so callers do not
+            stack a second retry loop on top of the first.
+    """
+
+    def __init__(self, message: str = "", *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class JudgeParseError(JudgekitError):

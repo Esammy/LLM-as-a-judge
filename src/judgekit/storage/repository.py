@@ -10,9 +10,9 @@ like evidence.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload
 
@@ -251,6 +251,31 @@ async def comparable_history(
         .limit(limit)
     )
     return (await session.execute(query)).scalars().all()
+
+
+ACTIVE_STATUSES = ("queued", "running")
+
+
+async def count_active(session: AsyncSession) -> int:
+    """Runs that are queued or running right now."""
+    query = select(func.count()).select_from(RunRow).where(RunRow.status.in_(ACTIVE_STATUSES))
+    return int((await session.execute(query)).scalar_one())
+
+
+async def fail_stale_runs(session: AsyncSession, *, older_than: timedelta, reason: str) -> int:
+    """Fail runs still queued or running after ``older_than``.
+
+    A worker that dies mid-run leaves its row in ``running`` forever, which makes
+    the run undeletable and the queue-depth gauge wrong. Returns how many rows
+    were failed.
+    """
+    cutoff = datetime.now(UTC) - older_than
+    result = await session.execute(
+        update(RunRow)
+        .where(RunRow.status.in_(ACTIVE_STATUSES), RunRow.created_at < cutoff)
+        .values(status="failed", error=reason, finished_at=datetime.now(UTC))
+    )
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def delete_run(session: AsyncSession, run_id: str) -> bool:

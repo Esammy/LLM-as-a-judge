@@ -669,7 +669,6 @@ class TestWorkerEntrypoint:
             )
 
         reset_metrics()
-        get_metrics().queue_depth.inc()
 
         result = await run_evaluation(
             {"session_factory": factory}, "w1", str(DATASET_PATH), str(V2_PATH), "stub", 4

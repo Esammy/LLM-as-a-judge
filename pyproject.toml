@@ -45,7 +45,7 @@ dependencies = [
 # would buy nothing. It also means the Groq adapter works against any
 # OpenAI-compatible host by changing one URL.
 service = [
-    "fastapi>=0.162.6",
+    "fastapi>=0.165.0",
     "uvicorn[standard]>=0.34",
     "sqlalchemy>=2.0.54",
     "alembic>=1.14",

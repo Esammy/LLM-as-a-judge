@@ -73,7 +73,7 @@ dev = [
     "tzdata>=2026.4; sys_platform == 'win32'",
     "pytest-asyncio>=1.5.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.17.5",
+    "ruff>=0.17.6",
     "mypy>=2.4.1",
     "types-PyYAML>=6.0.12.20261113",
     "pre-commit>=4.7.0",
